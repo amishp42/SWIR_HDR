@@ -1,0 +1,14 @@
+name: QDimages
+channels:
+  - conda-forge
+  - spectrocat
+  - defaults
+dependencies:
+  - ipykernel
+  - matplotlib
+  - notebook
+  - python=3.10.12
+  - scikit-learn
+  - pandas
+  - numpy
+  - spectrochempy=0.6.7=stable
