@@ -1,0 +1,18 @@
+name: QDimages_240604
+channels:
+  - conda-forge
+  - spectrocat
+  - defaults
+dependencies:
+  - ipykernel
+  - matplotlib
+  - notebook
+  - python=3.12.3
+  - scikit-learn
+  - scikit-image
+  - opencv
+  - pandas
+  - numpy
+  - pathlib
+  - h5py
+  - spectrochempy=0.6.8=stable
