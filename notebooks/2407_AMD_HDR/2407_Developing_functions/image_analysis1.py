@@ -313,7 +313,7 @@ def plot_log_log_crf(response_curve, z_min, z_max, ax=None):
     ax.set_ylabel('Log Exposure')
     ax.set_title('Camera Response Function (Log-Log)')
     ax.set_xscale('log')
-    ax.set_yscale('log')
+    ax.set_yscale('linear')
     ax.legend()
     ax.grid(True)
 
