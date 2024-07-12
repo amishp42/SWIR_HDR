@@ -186,14 +186,15 @@ def save_processed_data(extracted_images, directory, experiment_title, base_data
     # Save darkcount-subtracted (denoised) images
     for key, value in extracted_images['denoised_images'].items():
         denoised_file = os.path.join(data_folder, f"{experiment_title}_{key}_denoised.npy")
-        np.save(denoised_file, value)
+        # Ensure non-negative values and convert to uint16
+        np.save(denoised_file, np.clip(value, 0, np.iinfo(np.uint16).max).astype(np.uint16))
         print(f"Denoised images for {key} saved to: {denoised_file}")
 
     # Save exposure times
     exposure_times_file = os.path.join(data_folder, f"{experiment_title}_exposure_times.npy")
     np.save(exposure_times_file, extracted_images['exposure_times'])
     print(f"Exposure times saved to: {exposure_times_file}")
-
+    
 def load_processed_data(directory, experiment_title, base_data_folder="data"):
     # Extract the last part of the directory path
     experiment_folder = os.path.basename(os.path.normpath(directory))
