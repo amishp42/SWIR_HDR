@@ -102,8 +102,8 @@ def import_h5(directory, experiment_title):
         denoised_array = np.where(image_arrays[key] > threshold[:, np.newaxis, np.newaxis], image_arrays[key] - threshold[:, np.newaxis, np.newaxis], 0)
         image_denoised_arrays[key] = denoised_array
 
-    # print("Threshold:", threshold)
-    # print("Denoised arrays:", image_denoised_arrays[key])
+    print("Threshold:", threshold, "; darkcount mean:", darkcount_mean,"; darkcount std", darkcount_std)
+    print("Denoised arrays:", image_denoised_arrays[key])
 
     # Print the shapes of the arrays
     # print("Darkcount array shape:", darkcount_array.shape)
@@ -185,7 +185,7 @@ def save_processed_data(extracted_images, directory, experiment_title, base_data
 
     # Save darkcount-subtracted (denoised) images
     for key, value in extracted_images['denoised_images'].items():
-        denoised_file = os.path.join(data_folder, f"{experiment_title}_{key}_denoised.npy")
+        denoised_file = os.path.join(data_folder, f"{key}_denoised.npy")
         # Ensure non-negative values and convert to uint16
         np.save(denoised_file, np.clip(value, 0, np.iinfo(np.uint16).max).astype(np.uint16))
         print(f"Denoised images for {key} saved to: {denoised_file}")
@@ -209,8 +209,8 @@ def load_processed_data(directory, experiment_title, base_data_folder="data"):
     # Load darkcount-subtracted (denoised) images
     denoised_images = {}
     for file in os.listdir(data_folder):
-        if file.startswith(f"{experiment_title}_") and file.endswith("_denoised.npy"):
-            key = file.split('_')[-2]  # Assuming the key is the second-to-last part of the filename
+        if file.endswith("_denoised.npy"):
+            key = file.split('_')[0]  # Assuming the key is the first part of the filename
             denoised_file = os.path.join(data_folder, file)
             denoised_images[key] = np.load(denoised_file)
             print(f"Loaded denoised images for {key} from: {denoised_file}")

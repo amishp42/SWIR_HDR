@@ -97,8 +97,20 @@ def generate_multi_page_report(denoised_files, exposure_times, directory, experi
         if images.dtype != np.uint16:
             logger.warning(f"Image data in {npy_filename} is not uint16. Consider updating the save process.")
         
-        montage, hdr_image, response_curve = capture_plots(images, exposure_times)
+        montage, hdr_image, response_curve, z_min, z_max, radiance_map, intensity_samples, log_exposures = capture_plots(images, exposure_times)
         
+        # Process the radiance map
+        standard_8bit, log_he_8bit, clahe_8bit = process_hdr_to_8bit(radiance_map)
+        
+        # Save the processed images
+        cv2.imwrite(os.path.join(directory, f"{npy_filename[:-4]}_standard_8bit.png"), standard_8bit)
+        cv2.imwrite(os.path.join(directory, f"{npy_filename[:-4]}_log_he_8bit.png"), log_he_8bit)
+        cv2.imwrite(os.path.join(directory, f"{npy_filename[:-4]}_clahe_8bit.png"), clahe_8bit)
+        
+        # Save the radiance map
+        radiance_map_filename = f"{npy_filename[:-4]}_radiance_map.npy"
+        np.save(os.path.join(directory, radiance_map_filename), radiance_map)
+    
         available_width = page_width - 4*margin
         available_height = page_height - 5*margin
         
@@ -133,7 +145,6 @@ def generate_multi_page_report(denoised_files, exposure_times, directory, experi
     
     logger.info(f"Report saved as {output_path}")
 
-
 def linearWeight(pixel_value, z_min, z_max):
     """
     Linear weighting function based on pixel intensity that reduces the
@@ -161,27 +172,27 @@ def estimate_radiance(images, exposure_times):
     
     return radiance / np.maximum(weight_sum, 1e-6)
 
-def sampleIntensities(images, exposure_times, num_samples=150000):
-    """
-    Sample pixel intensities from the exposure stack, ensuring full intensity range coverage.
-    """
+def sampleIntensities(images, exposure_times, num_samples=50000):
     num_images, height, width = images.shape
     z_min, z_max = int(np.min(images)), int(np.max(images))
     print(f"z_max: {z_max}; z_min: {z_min}")
 
     radiance = estimate_radiance(images, exposure_times)
-    widest_range_image = images[np.argmax([np.ptp(img) for img in images])]
 
-    num_bins = min(num_samples, z_max - z_min + 1)
-    bins = np.linspace(z_min, z_max, num_bins + 1, dtype=int)
+    # Logarithmic binning
+    num_bins = min(num_samples // num_images, z_max - z_min + 1)
+    bins = np.logspace(np.log10(z_min + 1), np.log10(z_max + 1), num_bins + 1) - 1
+    bins = np.unique(bins.astype(int))
 
     sampled_pixels = []
-    for i in range(len(bins) - 1):
-        bin_mask = (widest_range_image >= bins[i]) & (widest_range_image < bins[i+1])
-        pixels_in_bin = np.where(bin_mask)
-        if len(pixels_in_bin[0]) > 0:
-            idx = np.random.randint(len(pixels_in_bin[0]))
-            sampled_pixels.append((pixels_in_bin[0][idx], pixels_in_bin[1][idx]))
+    for img in images:
+        for i in range(len(bins) - 1):
+            bin_mask = (img >= bins[i]) & (img < bins[i+1])
+            pixels_in_bin = np.where(bin_mask)
+            if len(pixels_in_bin[0]) > 0:
+                num_to_sample = min(len(pixels_in_bin[0]), num_samples // (num_images * num_bins))
+                sampled_indices = np.random.choice(len(pixels_in_bin[0]), num_to_sample, replace=False)
+                sampled_pixels.extend(list(zip(pixels_in_bin[0][sampled_indices], pixels_in_bin[1][sampled_indices])))
 
     intensity_samples = np.zeros((len(sampled_pixels), num_images), dtype=np.uint16)
     log_exposures = np.zeros((len(sampled_pixels), num_images))
@@ -191,7 +202,8 @@ def sampleIntensities(images, exposure_times, num_samples=150000):
             intensity_samples[i, j] = images[j, row, col]
             log_exposures[i, j] = np.log(radiance[row, col] * exposure_times[j] + 1e-10)
 
-    valid_samples = np.all((intensity_samples > 0) & (intensity_samples < z_max), axis=1)
+    # Relaxed validity criteria
+    valid_samples = np.sum((intensity_samples > 0) & (intensity_samples < z_max), axis=1) >= num_images // 2
     intensity_samples = intensity_samples[valid_samples]
     log_exposures = log_exposures[valid_samples]
 
@@ -245,18 +257,18 @@ def computeRadianceMap(images, exposure_times, response_curve, weighting_functio
     Calculate a radiance map for each pixel from the response curve.
     """
     num_images, height, width = images.shape
-    img_rad_map = np.zeros((height, width), dtype=np.float32)
+    radiance_map = np.zeros((height, width), dtype=np.float32)
     sum_weights = np.zeros((height, width), dtype=np.float32)
 
     for i in range(num_images):
         w = weighting_function(images[i], z_min, z_max)
-        img_rad_map += w * (response_curve[np.clip(images[i] - z_min, 0, len(response_curve) - 1)] - np.log(exposure_times[i]))
+        radiance_map += w * (response_curve[np.clip(images[i] - z_min, 0, len(response_curve) - 1)] - np.log(exposure_times[i]))
         sum_weights += w
 
     sum_weights[sum_weights == 0] = 1e-6
-    img_rad_map /= sum_weights
+    radiance_map /= sum_weights
 
-    return img_rad_map
+    return radiance_map
 
 def plot_weighting_function(weighting_function, z_min, z_max, ax=None):
     """Plot the weighting function against pixel intensity."""
@@ -317,21 +329,36 @@ def plot_log_log_crf(response_curve, z_min, z_max, ax=None):
     ax.legend()
     ax.grid(True)
 
-def plot_radiance_map(img_rad_map, ax=None):
+def plot_radiance_map(radiance_map, ax=None):
     """Plot the radiance map."""
     if ax is None:
         ax = plt.gca()
     
-    im = ax.imshow(img_rad_map, cmap='viridis')
+    im = ax.imshow(radiance_map, cmap='viridis')
     plt.colorbar(im, ax=ax, label='Radiance')
     ax.set_title('Radiance Map')
 
+def plot_radiance_histogram(radiance_map, ax=None):
+    if ax is None:
+        ax = plt.gca()
+    
+    # Flatten the radiance map and remove any infinite or NaN values
+    radiance_values = radiance_map.flatten()
+    radiance_values = radiance_values[np.isfinite(radiance_values)]
+    
+    # Plot histogram
+    ax.hist(radiance_values, bins=100, range=(np.percentile(radiance_values, 1), np.percentile(radiance_values, 99)), log=True)
+    ax.set_xlabel('Radiance')
+    ax.set_ylabel('Frequency')
+    ax.set_title('Radiance Histogram')
+
 def capture_plots(images, exposure_times, smoothing_lambda=1000., gamma=0.6):
-    """Capture all plots for the HDR report."""
-    fig = plt.figure(figsize=(8.5, 11))  # Adjusted to match letter size in inches
+    # Create a figure with a grid layout
+    fig = plt.figure(figsize=(10, 13))
     gs = GridSpec(4, 2, figure=fig, height_ratios=[1, 1, 1, 1.2])
 
-    hdr_image, response_curve, z_min, z_max, img_rad_map, intensity_samples, log_exposures = computeHDR(images, exposure_times, smoothing_lambda, gamma)
+    # Compute HDR and get all necessary data
+    hdr_image, response_curve, z_min, z_max, radiance_map, intensity_samples, log_exposures = computeHDR(images, exposure_times, smoothing_lambda, gamma)
 
     ax1 = fig.add_subplot(gs[0, 0])
     plot_weighting_function(linearWeight, z_min, z_max, ax=ax1)
@@ -350,11 +377,11 @@ def capture_plots(images, exposure_times, smoothing_lambda=1000., gamma=0.6):
     ax4.set_title('CRF Residuals', pad=10)
 
     ax5 = fig.add_subplot(gs[2, 0])
-    plot_radiance_map(img_rad_map, ax=ax5)
-    ax5.set_title('Radiance Map', pad=10)
+    plot_radiance_histogram(radiance_map, ax=ax5)
+    ax5.set_title('Radiance Histogram', pad=10)
 
     ax6 = fig.add_subplot(gs[2, 1])
-    plot_radiance_map(np.exp(img_rad_map), ax=ax6)
+    plot_radiance_map(np.exp(radiance_map), ax=ax6)
     ax6.set_title('Linear Radiance Map', pad=10)
 
     ax7 = fig.add_subplot(gs[3, :])
@@ -363,15 +390,17 @@ def capture_plots(images, exposure_times, smoothing_lambda=1000., gamma=0.6):
     plt.colorbar(im, ax=ax7, orientation='vertical', pad=0.08, aspect=25)
 
     plt.tight_layout()
-    plt.subplots_adjust(hspace=0.5, wspace=0.3)
+    
+    # Adjust spacing between subplots
+    plt.subplots_adjust(hspace=0.4, wspace=0.3)
 
+    # Save the montage to a BytesIO object
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
     buf.seek(0)
     plt.close(fig)
 
-    return buf, hdr_image, response_curve
-
+    return buf, hdr_image, response_curve, z_min, z_max, radiance_map, intensity_samples, log_exposures
 
 def generate_report(images, exposure_times, directory, experiment_title, npy_filename, output_file):
     """Generate the HDR report with a header containing the npy filename."""
@@ -427,20 +456,19 @@ def generate_report(images, exposure_times, directory, experiment_title, npy_fil
     doc.build(story, onFirstPage=add_header, onLaterPages=add_header)
     print(f"Report saved as {output_path}")
 
-
 def computeHDR(images, exposure_times, smoothing_lambda=1000., gamma=0.6):
     """Compute the HDR image."""
     intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times)
     response_curve = computeResponseCurve(intensity_samples, log_exposures, smoothing_lambda, linearWeight, z_min, z_max)
     response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
-    img_rad_map = computeRadianceMap(images, exposure_times, response_curve, linearWeight, z_min, z_max)
+    radiance_map = computeRadianceMap(images, exposure_times, response_curve, linearWeight, z_min, z_max)
 
-    img_rad_map = (img_rad_map - np.min(img_rad_map)) / (np.max(img_rad_map) - np.min(img_rad_map))
+    radiance_map = (radiance_map - np.min(radiance_map)) / (np.max(radiance_map) - np.min(radiance_map))
 
     def adaptive_log_tone_mapping(x, a=0.5):
         return (np.log(1 + a * x) / np.log(1 + a)) / (np.log(1 + a * np.max(x)) / np.log(1 + a))
 
-    image_mapped = adaptive_log_tone_mapping(img_rad_map)
+    image_mapped = adaptive_log_tone_mapping(radiance_map)
     
     template = images[len(images) // 2]
     scale_factor = np.mean(template) / np.mean(image_mapped)
@@ -449,7 +477,7 @@ def computeHDR(images, exposure_times, smoothing_lambda=1000., gamma=0.6):
     image_tuned = (image_tuned - np.min(image_tuned)) / (np.max(image_tuned) - np.min(image_tuned))
     hdr_image = (image_tuned * 255).astype(np.uint8)
 
-    return hdr_image, response_curve, z_min, z_max, img_rad_map, intensity_samples, log_exposures
+    return hdr_image, response_curve, z_min, z_max, radiance_map, intensity_samples, log_exposures
 
 def globalToneMapping(image, gamma):
     """
@@ -481,3 +509,56 @@ def intensityAdjustment(image, template):
     image_avg = np.average(image)
     template_avg = np.average(template)
     return image * (template_avg / image_avg)
+
+
+def determine_effective_range(radiance_map, low_percentile=1, high_percentile=99):
+    """Determine the effective range of the radiance map."""
+    low_val = np.percentile(radiance_map, low_percentile)
+    high_val = np.percentile(radiance_map, high_percentile)
+    return low_val, high_val
+
+def reinhard_tone_mapping(radiance_map, low_val, high_val, key=0.18):
+    """Apply Reinhard's photographic tone mapping."""
+    # Normalize
+    normalized = (radiance_map - low_val) / (high_val - low_val)
+    
+    # Apply Reinhard's formula
+    L_w = key * normalized
+    L_d = L_w / (1 + L_w)
+    
+    return L_d
+
+def log_histogram_equalization(image):
+    """Apply log-scale histogram equalization."""
+    # Convert to log scale
+    log_image = np.log1p(image)
+    
+    # Normalize to 0-255
+    log_image = ((log_image - log_image.min()) / (log_image.max() - log_image.min()) * 255).astype(np.uint8)
+    
+    # Apply histogram equalization
+    return cv2.equalizeHist(log_image)
+
+def apply_clahe(image, clip_limit=2.0, tile_grid_size=(8,8)):
+    """Apply CLAHE."""
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    return clahe.apply(image)
+
+def process_hdr_to_8bit(radiance_map):
+    # Determine effective range
+    low_val, high_val = determine_effective_range(radiance_map)
+    
+    # Apply tone mapping
+    tone_mapped = reinhard_tone_mapping(radiance_map, low_val, high_val)
+    
+    # Convert to 8-bit
+    image_8bit = (tone_mapped * 255).astype(np.uint8)
+    
+    # Apply log-scale histogram equalization
+    log_he = log_histogram_equalization(image_8bit)
+    
+    # Apply CLAHE
+    clahe = apply_clahe(log_he)
+    
+    return image_8bit, log_he, clahe
+
