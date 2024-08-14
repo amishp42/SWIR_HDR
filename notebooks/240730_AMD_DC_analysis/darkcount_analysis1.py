@@ -9,6 +9,8 @@ from reportlab.lib import colors
 from reportlab.platypus import Table, TableStyle
 from reportlab.lib.utils import ImageReader
 import io
+from scipy.optimize import curve_fit
+from scipy import stats
 
 
 def import_darkcount_data(directory):
@@ -35,10 +37,6 @@ def import_darkcount_data(directory):
     darkcount_array = np.array(darkcount_data)
     darkcount_array = darkcount_array.squeeze()  # This will remove the extra dimension
     exposure_times = np.array(exposure_times)
-    #sort darkcounts by exposure time in ascending order
-    darkcount_array = darkcount_array[exposure_times.argsort(), :, :]
-    #sort exposure times
-    exposure_times = exposure_times[exposure_times.argsort()]
     
     print(f"Shape of darkcount_array: {darkcount_array.shape}")
     print(f"Shape of exposure_times: {exposure_times.shape}")
@@ -304,5 +302,220 @@ def generate_darkcount_report(darkcount_array, exposure_times, analysis_results,
     plot_img = ImageReader(plot_buf)
     c.drawImage(plot_img, margin, margin, width=content_width, height=content_height - 50)
 
+
+    # S-curve fit and linear range
+    popt, linear_range = fit_s_curve(exposure_times, analysis_results['mean'])
+    
+    # Model dark current
+    Sd, b = model_dark_current(darkcount_array, exposure_times, linear_range)
+    
+    # Save model parameters
+    save_model_parameters(Sd, b, output_dir, experiment_name)
+
+
+    # Add a new page for the S-curve fit
+    c.showPage()
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(margin, height - margin, "S-curve Fit and Linear Range")
+
+    plot_buf = plot_s_curve_fit(exposure_times, analysis_results['mean'], popt, linear_range)
+    plot_img = ImageReader(plot_buf)
+    c.drawImage(plot_img, margin, margin, width=content_width, height=content_height - 70)
+
+    # Add S-curve parameters and linear range information
+    c.setFont("Helvetica", 10)
+    c.drawString(margin, margin - 20, f"S-curve parameters: a={popt[0]:.2f}, b={popt[1]:.2f}, c={popt[2]:.2f}, d={popt[3]:.2f}")
+    c.drawString(margin, margin - 40, f"Linear range: {linear_range[0]:.2f}s to {linear_range[1]:.2f}s")
+
+    # Add model parameters page
+    c.showPage()
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(margin, height - margin, "Dark Current Model Parameters")
+
+    plot_buf = plot_model_parameters(Sd, b)
+    plot_img = ImageReader(plot_buf)
+    c.drawImage(plot_img, margin, margin, width=content_width, height=content_height - 70)
+
+    c.setFont("Helvetica", 10)
+    c.drawString(margin, margin - 20, f"Mean Sd: {np.mean(Sd):.6f}")
+    c.drawString(margin, margin - 40, f"Mean b: {np.mean(b):.6f}")
+
     c.save()
     print(f"Report saved as {filename}")
+    print(f"Model parameters (Sd and b) saved in {output_dir}")
+
+
+def sort_by_exposure_time(darkcount_array, exposure_times):
+    """
+    Sort darkcount_array and exposure_times by ascending exposure times.
+    """
+    sorted_indices = np.argsort(exposure_times)
+    sorted_darkcount_array = darkcount_array[sorted_indices]
+    sorted_exposure_times = exposure_times[sorted_indices]
+    return sorted_darkcount_array, sorted_exposure_times
+
+
+# # def s_curve_log_time(t, Smin, Smax, t_mid, steepness):
+# def s_curve(x, a, b, c, d):
+#     """
+#     S-curve function for fitting camera response with log-scale exposure time.
+    
+#     Parameters:
+#     x: t: array-like, exposure times
+#     d: Smin: float, minimum signal level (noise floor)
+#     a: Smax: float, maximum signal level (saturation)
+#     c: t_mid: float, exposure time at the midpoint of the curve
+#     b: steepness: float, controls the steepness of the curve
+    
+#     Returns:
+#     array-like, predicted signal values
+#     """
+#     return d + (a - d) / (1 + np.exp(-b * (np.log10(x) - np.log10(c))))
+
+
+# def s_curve(x, a, b, c, d):
+#     """
+#     Saturation curve function for fitting camera response.
+    
+#     Parameters:
+#     [x] t: array-like, exposure times
+#     [b] DC: float, dark current rate (electrons/second)
+#     [c] RN: float, read noise (electrons)
+#     [a] Smax: float, saturation level of the well (electrons)
+#     d: the curve's minimum value
+
+#     Returns:
+#     array-like, predicted signal values
+#     """
+    
+#     return a * (1 - np.exp(-(b * x + d) / a))  
+
+# def s_curve(x, a, b, c, d):
+#     """
+#     S-curve function for fitting.
+#     a: the curve's maximum value
+#     b: the curve's steepness
+#     c: the x-value of the curve's midpoint
+#     d: the curve's minimum value
+#     """
+#     return d + (a - d) / (1 + (c/x)**b)
+
+def s_curve(x, a, b, c, d):
+    """
+    S-curve function for fitting.
+    a: the curve's maximum value
+    b: the curve's steepness
+    c: the x-value of the curve's midpoint
+    d: the curve's minimum value
+    """
+    return d + (a - d) / (1 + np.exp(-b * (x - c)))
+
+def fit_s_curve(exposure_times, mean_values):
+    """
+    Fit the data to an S-curve and determine the linear range.
+    """
+    popt, _ = curve_fit(s_curve, exposure_times, mean_values, p0=[np.max(mean_values), 1, np.median(exposure_times), np.min(mean_values)])
+    
+    # Calculate the derivative of the S-curve
+    x_fine = np.linspace(min(exposure_times), max(exposure_times), 1000)
+    y_fine = s_curve(x_fine, *popt)
+    dy_dx = np.gradient(y_fine, x_fine)
+    
+    # Find the linear range (where the derivative is within 10% of its maximum)
+    linear_range_mask = dy_dx > 0.9 * np.max(dy_dx)
+    linear_range = (x_fine[linear_range_mask][0], x_fine[linear_range_mask][-1])
+    
+    return popt, linear_range
+
+def plot_s_curve_fit(exposure_times, mean_values, popt, linear_range):
+    """
+    Plot the original data, fitted S-curve, and linear range.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+    
+    x_fine = np.linspace(min(exposure_times), max(exposure_times), 1000)
+    y_fine = s_curve(x_fine, *popt)
+    
+    # Linear scale
+    ax1.scatter(exposure_times, mean_values, label='Data')
+    ax1.plot(x_fine, y_fine, 'r-', label='Fitted S-curve')
+    ax1.axvline(linear_range[0], color='g', linestyle='--', label='Linear Range')
+    ax1.axvline(linear_range[1], color='g', linestyle='--')
+    ax1.set_xlabel('Exposure Time (s)')
+    ax1.set_ylabel('Mean Dark Current')
+    ax1.set_title('S-curve Fit and Linear Range (Linear Scale)')
+    ax1.legend()
+    
+    # Log scale
+    ax2.scatter(exposure_times, mean_values, label='Data')
+    ax2.plot(x_fine, y_fine, 'r-', label='Fitted S-curve')
+    ax2.axvline(linear_range[0], color='g', linestyle='--', label='Linear Range')
+    ax2.axvline(linear_range[1], color='g', linestyle='--')
+    ax2.set_xlabel('Exposure Time (s)')
+    ax2.set_ylabel('Mean Dark Current')
+    ax2.set_title('S-curve Fit and Linear Range (Log Scale)')
+    ax2.set_xscale('log')
+    ax2.legend()
+    
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    
+    return buf
+
+
+import numpy as np
+from scipy import stats
+
+def model_dark_current(darkcount_array, exposure_times, linear_range):
+    """Model dark current for each pixel within the linear range."""
+    linear_mask = (exposure_times >= linear_range[0]) & (exposure_times <= linear_range[1])
+    linear_exposure_times = exposure_times[linear_mask]
+    linear_darkcount_data = darkcount_array[linear_mask]
+
+    num_pixels = linear_darkcount_data.shape[1] * linear_darkcount_data.shape[2]
+    darkcount_data_reshaped = linear_darkcount_data.reshape(linear_darkcount_data.shape[0], -1)
+    
+    Sd = np.zeros(num_pixels)
+    b = np.zeros(num_pixels)
+    
+    for i in range(num_pixels):
+        slope, intercept, _, _, _ = stats.linregress(linear_exposure_times, darkcount_data_reshaped[:, i])
+        Sd[i] = slope
+        b[i] = intercept
+    
+    Sd = Sd.reshape(linear_darkcount_data.shape[1], linear_darkcount_data.shape[2])
+    b = b.reshape(linear_darkcount_data.shape[1], linear_darkcount_data.shape[2])
+    
+    return Sd, b
+
+def plot_model_parameters(Sd, b):
+    """Plot histograms of the model parameters."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    ax1.hist(Sd.flatten(), bins=50)
+    ax1.set_xlabel('Sd (Dark Current Slope)')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('Distribution of Sd')
+    
+    ax2.hist(b.flatten(), bins=50)
+    ax2.set_xlabel('b (Bias)')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title('Distribution of b')
+    
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    
+    return buf
+
+def save_model_parameters(Sd, b, output_dir, experiment_name):
+    """Save Sd and b as NPY files."""
+    np.save(os.path.join(output_dir, f'{experiment_name}_Sd.npy'), Sd)
+    np.save(os.path.join(output_dir, f'{experiment_name}_b.npy'), b)
