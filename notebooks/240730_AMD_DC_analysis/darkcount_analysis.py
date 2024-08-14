@@ -32,6 +32,10 @@ def import_darkcount_data(directory):
     darkcount_array = np.array(darkcount_data)
     darkcount_array = darkcount_array.squeeze()  # This will remove the extra dimension
     exposure_times = np.array(exposure_times)
+    #sort darkcounts by exposure time in ascending order
+    darkcount_array = darkcount_array[exposure_times.argsort(), :, :]
+    #sort exposure times
+    exposure_times = exposure_times[exposure_times.argsort()]
     
     print(f"Shape of darkcount_array: {darkcount_array.shape}")
     print(f"Shape of exposure_times: {exposure_times.shape}")
