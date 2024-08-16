@@ -45,8 +45,8 @@ def load_clipped_denoised_data(directory, experiment_title, base_data_folder="da
     Returns:
     dict: A dictionary containing the loaded data for each laser-filter combination.
     """
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    final_data_folder = os.path.join(base_data_folder, experiment_folder, "final_data")
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
     
     data_dict = {}
     
@@ -268,8 +268,8 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
 
 def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder="data"):
     """Save the unscaled radiance map."""
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    final_data_folder = os.path.join(base_data_folder, experiment_folder, "final_data")
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
     os.makedirs(final_data_folder, exist_ok=True)
 
     radiance_file = os.path.join(final_data_folder, f"{experiment_title}_radiance_map.npy")
@@ -277,9 +277,9 @@ def save_radiance_map(radiance_map, directory, experiment_title, base_data_folde
     print(f"Radiance map saved to: {radiance_file}")
 
 def process_hdr_images(directory, experiment_title, base_data_folder="data", smoothing_lambda=1000):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder)
-    final_data_folder = os.path.join(data_folder, "final_data")
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    #data_folder = os.path.join(base_data_folder, experiment_folder)
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
     
     # Load clipped and denoised data
     data_dict = load_clipped_denoised_data(directory, experiment_title, base_data_folder)
@@ -489,8 +489,8 @@ def capture_plots(data, adaptive_weight):
     return buf
 
 def generate_multi_page_report(processed_data, directory, experiment_title, adaptive_weight, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder)
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    data_folder = os.path.join(directory, base_data_folder)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f'hdr_report_{experiment_title}_{timestamp}.pdf'
@@ -561,8 +561,8 @@ def generate_multi_page_report(processed_data, directory, experiment_title, adap
     logger.info(f"Report saved as {output_path}")
 
 def save_crf_data(processed_data, directory, experiment_title, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder, "final_data")
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    data_folder = os.path.join(directory, base_data_folder, "final_data")
     os.makedirs(data_folder, exist_ok=True)
 
     crf_file = os.path.join(data_folder, f"{experiment_title}_crf_data.npz")
