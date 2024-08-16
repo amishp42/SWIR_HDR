@@ -11,12 +11,11 @@ from reportlab.platypus import Table, TableStyle
 import io
 
 
-def import_and_save_raw(directory, experiment_title, base_data_folder="data"):
+def import_and_save_raw(directory, experiment_title, base_data_folder):
     laser_wavelengths = {'1': '670', '2': '760', '3': '808'}
     emission_filters = {'12': 'BP1150', '13': 'BP1200', '14': 'BP1250', '15': 'BP1300', '16': 'BP1350', '17': 'BP1575'}
 
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder, "raw_data")
+    data_folder = os.path.join(directory, base_data_folder,"raw_data")
     os.makedirs(data_folder, exist_ok=True)
 
     for laser_key, laser_value in laser_wavelengths.items():
@@ -57,10 +56,9 @@ def import_and_save_raw(directory, experiment_title, base_data_folder="data"):
     print(f"Raw data saved in: {data_folder}")
     return data_folder
 
-def clip_and_save(directory, Slinear, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    raw_data_folder = os.path.join(base_data_folder, experiment_folder, "raw_data")
-    clipped_data_folder = os.path.join(base_data_folder, experiment_folder, "processed_data")
+def clip_and_save(directory, Slinear, base_data_folder):
+    raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
+    clipped_data_folder = os.path.join(directory, base_data_folder, "processed_data")
     os.makedirs(clipped_data_folder, exist_ok=True)
 
     for file in os.listdir(raw_data_folder):
@@ -91,10 +89,9 @@ def clip_and_save(directory, Slinear, base_data_folder="data"):
     print(f"Clipped data saved in: {clipped_data_folder}")
     return clipped_data_folder
 
-def denoise_and_save(directory, experiment_title, Sd, b, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    raw_data_folder = os.path.join(base_data_folder, experiment_folder, "raw_data")
-    denoised_data_folder = os.path.join(base_data_folder, experiment_folder, "processed_data")
+def denoise_and_save(directory, experiment_title, Sd, b, base_data_folder):
+    raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
+    denoised_data_folder = os.path.join(directory, base_data_folder, "processed_data")
     os.makedirs(denoised_data_folder, exist_ok=True)
 
     for file in os.listdir(raw_data_folder):
@@ -113,10 +110,9 @@ def denoise_and_save(directory, experiment_title, Sd, b, base_data_folder="data"
 
     print(f"Denoised data saved in: {denoised_data_folder}")
 
-def clip_denoise_and_save(directory, experiment_title, Sd, b, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    clipped_data_folder = os.path.join(base_data_folder, experiment_folder, "processed_data")
-    clipped_denoised_data_folder = os.path.join(base_data_folder, experiment_folder, "final_data")
+def clip_denoise_and_save(directory, experiment_title, Sd, b, base_data_folder):
+    clipped_data_folder = os.path.join(directory, base_data_folder, "processed_data")
+    clipped_denoised_data_folder = os.path.join(directory,base_data_folder, "final_data")
     os.makedirs(clipped_denoised_data_folder, exist_ok=True)
 
     for file in os.listdir(clipped_data_folder):
@@ -135,9 +131,8 @@ def clip_denoise_and_save(directory, experiment_title, Sd, b, base_data_folder="
 
     print(f"Clipped and denoised data saved in: {clipped_denoised_data_folder}")
 
-def calculate_Slinear_adjusted(directory, experiment_title, Sd, b, Slinear, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    clipped_denoised_data_folder = os.path.join(base_data_folder, experiment_folder, "final_data")
+def calculate_Slinear_adjusted(directory, experiment_title, Sd, b, Slinear, base_data_folder):
+    clipped_denoised_data_folder = os.path.join(directory, base_data_folder, "final_data")
     
     Slinear_adjusted = np.zeros((640, 512))
 
@@ -154,11 +149,11 @@ def calculate_Slinear_adjusted(directory, experiment_title, Sd, b, Slinear, base
     np.save(os.path.join(clipped_denoised_data_folder, f"{experiment_title}_Slinear_adjusted.npy"), Slinear_adjusted)
     print(f"Slinear_adjusted saved in: {clipped_denoised_data_folder}")
 
-def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_data_folder="data"):
+def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_data_folder):
     experiment_folder = os.path.basename(os.path.normpath(directory))
-    raw_data_folder = os.path.join(base_data_folder, experiment_folder, "raw_data")
-    final_data_folder = os.path.join(base_data_folder, experiment_folder, "final_data")
-    report_folder = os.path.join(base_data_folder, experiment_folder, "reports")
+    raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    report_folder = os.path.join(directory, base_data_folder, "reports")
     os.makedirs(report_folder, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
