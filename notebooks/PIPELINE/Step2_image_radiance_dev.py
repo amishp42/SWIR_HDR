@@ -32,7 +32,7 @@ class FilenamePlaceholder(Flowable):
         self.canv.setFont('Helvetica', 9)
         self.canv.drawString(0, 0, f"File: {self.filename}")
 
-def load_clipped_denoised_data(directory, experiment_title, base_data_folder="data", extract=False):
+def load_clipped_denoised_data(directory, experiment_title, base_data_folder, extract=False):
     """
     Load clipped and denoised data from the final_data folder.
     
@@ -230,7 +230,8 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
     data_constraints = num_samples * num_images
     smoothness_constraints = intensity_range - 2
     monotonicity_constraints = intensity_range - 1
-    total_constraints = data_constraints + smoothness_constraints + monotonicity_constraints
+    z_mid_constraint = 1  # New constraint
+    total_constraints = data_constraints + smoothness_constraints + monotonicity_constraints + z_mid_constraint
 
     mat_A = np.zeros((total_constraints, intensity_range), dtype=np.float64)
     mat_b = np.zeros((total_constraints, 1), dtype=np.float64)
@@ -255,7 +256,7 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
         k += 1
 
     for z_k in range(z_min, int(np.max(Zmax_precomputed)) - 1):
-        if k < total_constraints:
+        if k < total_constraints - 1:  # Leave space for the new constraint
             mat_A[k, z_k - z_min] = -1
             mat_A[k, z_k - z_min + 1] = 1
             mat_b[k, 0] = 0.001
@@ -263,33 +264,35 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
         else:
             break
 
+    # Add the new constraint: Z_mid = 1 (log(exposure) = 0)
+    z_mid = int((z_min + z_max) // 2)  # Ensure z_mid is an integer
+    if z_mid - z_min < intensity_range:  # Check if the index is within bounds
+        mat_A[k, z_mid - z_min] = 1
+        mat_b[k, 0] = 0  # log(1) = 0
+    else:
+        print(f"Warning: z_mid ({z_mid}) - z_min ({z_min}) is out of bounds for intensity_range ({intensity_range})")
+
     x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
     return x.flatten()
 
-def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder="data"):
-    """Save the unscaled radiance map."""
-    #experiment_folder = os.path.basename(os.path.normpath(directory))
-    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
-    os.makedirs(final_data_folder, exist_ok=True)
-
-    radiance_file = os.path.join(final_data_folder, f"{experiment_title}_radiance_map.npy")
-    np.save(radiance_file, radiance_map)
-    print(f"Radiance map saved to: {radiance_file}")
-
-def process_hdr_images(directory, experiment_title, base_data_folder="data", smoothing_lambda=1000):
-    #experiment_folder = os.path.basename(os.path.normpath(directory))
-    #data_folder = os.path.join(base_data_folder, experiment_folder)
+def process_hdr_images(directory, experiment_title, base_data_folder, smoothing_lambda=1000, num_sets=None):
     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
     
     # Load clipped and denoised data
     data_dict = load_clipped_denoised_data(directory, experiment_title, base_data_folder)
     
+    coefficient_folder = '/Users/allisondennis/Spectral_demixing/notebooks/PIPELINE/data/'
+
     # Load Slinear, Sd, and bias arrays
-    Slinear = np.load(os.path.join(base_data_folder, 'Slinear.npy'))
-    Sd = np.load(os.path.join(base_data_folder, 'Sd.npy'))
-    bias = np.load(os.path.join(base_data_folder, 'b.npy'))
+    Slinear = np.load(os.path.join(coefficient_folder, 'Smax.npy'))
+    Sd = np.load(os.path.join(coefficient_folder, 'Sd.npy'))
+    bias = np.load(os.path.join(coefficient_folder, 'b.npy'))
     
     processed_data = []
+    
+    # Limit the number of sets to process if specified
+    if num_sets is not None:
+        data_dict = dict(list(data_dict.items())[:num_sets])
     
     for key, data in data_dict.items():
         images = data['image']
@@ -328,6 +331,74 @@ def process_hdr_images(directory, experiment_title, base_data_folder="data", smo
 
     logger.info("Finished processing all files.")
     return processed_data
+
+
+
+def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder):
+    """Save the unscaled radiance map."""
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    os.makedirs(final_data_folder, exist_ok=True)
+
+    radiance_file = os.path.join(final_data_folder, f"{experiment_title}_radiance_map.npy")
+    np.save(radiance_file, radiance_map)
+    print(f"Radiance map saved to: {radiance_file}")
+
+# def process_hdr_images(directory, experiment_title, base_data_folder, smoothing_lambda=1000):
+#     #experiment_folder = os.path.basename(os.path.normpath(directory))
+#     #data_folder = os.path.join(base_data_folder, experiment_folder)
+#     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    
+#     # Load clipped and denoised data
+#     data_dict = load_clipped_denoised_data(directory, experiment_title, base_data_folder)
+    
+#     coefficient_folder = '/Users/allisondennis/Spectral_demixing/notebooks/PIPELINE/data/'
+
+#     # Load Slinear, Sd, and bias arrays
+#     #Slinear = np.load(os.path.join(directory, base_data_folder, 'Slinear.npy'))
+#     Slinear = np.load(os.path.join(coefficient_folder, 'Smax.npy'))
+#     Sd = np.load(os.path.join(coefficient_folder, 'Sd.npy'))
+#     bias = np.load(os.path.join(coefficient_folder, 'b.npy'))
+    
+#     processed_data = []
+    
+#     for key, data in data_dict.items():
+#         images = data['image']
+#         exposure_times = data['exposure_time']
+        
+#         print(f"Processing {key}")
+#         print(f"Images shape: {images.shape}")
+#         print(f"Exposure times shape: {exposure_times.shape}")
+#         print(f"Slinear shape: {Slinear.shape}")
+#         print(f"Sd shape: {Sd.shape}")
+#         print(f"bias shape: {bias.shape}")
+        
+#         # Use return_all=True to get all the computed data
+#         Zmax_precomputed = precompute_zmax(Slinear, Sd, bias, exposure_times)
+#         print(f"Zmax_precomputed shape: {Zmax_precomputed.shape}")
+        
+#         radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
+#             images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, return_all=True
+#         )
+        
+#         radiance_map_filename = f"{key}_radiance_map.npy"
+#         np.save(os.path.join(final_data_folder, radiance_map_filename), radiance_map)
+#         logger.info(f"Radiance map saved to: {os.path.join(final_data_folder, radiance_map_filename)}")
+        
+#         processed_data.append({
+#             'key': key,
+#             'radiance_map': radiance_map,
+#             'response_curve': response_curve,
+#             'z_min': z_min,
+#             'z_max': z_max,
+#             'intensity_samples': intensity_samples,
+#             'log_exposures': log_exposures
+#         })
+        
+#         logger.info(f"Processed {key}")
+
+#     logger.info("Finished processing all files.")
+#     return processed_data
 
 def plot_weighting_function(weighting_function, z_min, z_max, ax=None):
     if ax is None:
@@ -560,7 +631,7 @@ def generate_multi_page_report(processed_data, directory, experiment_title, adap
     
     logger.info(f"Report saved as {output_path}")
 
-def save_crf_data(processed_data, directory, experiment_title, base_data_folder="data"):
+def save_crf_data(processed_data, directory, experiment_title, base_data_folder):
     #experiment_folder = os.path.basename(os.path.normpath(directory))
     data_folder = os.path.join(directory, base_data_folder, "final_data")
     os.makedirs(data_folder, exist_ok=True)
