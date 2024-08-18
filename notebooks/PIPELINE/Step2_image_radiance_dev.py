@@ -98,33 +98,47 @@ def precompute_zmax(Slinear, Sd, bias, exposure_times):
     
     return Zmax
 
+# def adaptive_weight(z, Zmax):
+    # """
+    # Compute the weighting function for each pixel.
+    # """
+    # Zmin = 0  # Assuming the minimum possible pixel value is 0
+    
+    # # Ensure z and Zmax are scalars or have the same shape
+    # if np.isscalar(z) and np.isscalar(Zmax):
+    #     middle = (Zmax + Zmin) / 2
+    #     if z <= middle:
+    #         return (z - Zmin) / (middle - Zmin)
+    #     else:
+    #         return (Zmax - z) / (Zmax - middle)
+    # else:
+    #     z = np.atleast_2d(z)
+    #     Zmax = np.atleast_2d(Zmax)
+    #     if z.shape != Zmax.shape:
+    #         Zmax = np.full_like(z, Zmax)
+        
+    #     weight = np.zeros_like(z, dtype=np.float32)
+    #     middle = (Zmax + Zmin) / 2
+    #     weight[z <= middle] = (z[z <= middle] - Zmin) / (middle[z <= middle] - Zmin)
+    #     weight[z > middle] = (Zmax[z > middle] - z[z > middle]) / (Zmax[z > middle] - middle[z > middle])
+    #     return weight
+    
+#def broadhat_weight(z, Zmax):
 def adaptive_weight(z, Zmax):
     """
-    Compute the weighting function for each pixel.
-    """
-    Zmin = 0  # Assuming the minimum possible pixel value is 0
+    Compute the weighting function for each pixel using a broadhat function.
     
-    # Ensure z and Zmax are scalars or have the same shape
-    if np.isscalar(z) and np.isscalar(Zmax):
-        middle = (Zmax + Zmin) / 2
-        if z <= middle:
-            return (z - Zmin) / (middle - Zmin)
-        else:
-            return (Zmax - z) / (Zmax - middle)
-    else:
-        z = np.atleast_2d(z)
-        Zmax = np.atleast_2d(Zmax)
-        if z.shape != Zmax.shape:
-            Zmax = np.full_like(z, Zmax)
-        
-        weight = np.zeros_like(z, dtype=np.float32)
-        middle = (Zmax + Zmin) / 2
-        weight[z <= middle] = (z[z <= middle] - Zmin) / (middle[z <= middle] - Zmin)
-        weight[z > middle] = (Zmax[z > middle] - z[z > middle]) / (Zmax[z > middle] - middle[z > middle])
-        return weight
+    Args:
+    z (numpy.ndarray): Pixel intensity values
+    Zmax (numpy.ndarray): Maximum pixel intensity values (same shape as z)
+    
+    Returns:
+    numpy.ndarray: Weights calculated using the broadhat function
+    """
+    x = z / Zmax
+    return np.maximum(0, 1 - ((x / 0.5) - 1)**12)
 
 def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, return_all=False):
-    """Calculate an unscaled radiance map for each pixel from the response curve."""
     logger.info("Starting computeRadianceMap function")
     
     intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
@@ -138,7 +152,7 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
     sum_weights = np.zeros((height, width), dtype=np.float32)
 
     for i in range(num_images):
-        w = adaptive_weight(images[i], Zmax_precomputed[i] if Zmax_precomputed.ndim == 3 else Zmax_precomputed)
+        w = adaptive_weight(images[i], Zmax_precomputed[i])
         
         # Convert images to integer indices
         indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
@@ -155,7 +169,7 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
         return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
     else:
         return radiance_map
-            
+                
 def estimate_radiance(images, exposure_times, Zmax_precomputed):
     num_images, height, width = images.shape
     radiance = np.zeros((height, width))
@@ -223,14 +237,14 @@ def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=5000
     return intensity_samples, log_exposures, z_min, z_max
 
 def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, weighting_function, z_min, z_max, Zmax_precomputed):
-    """Find the camera response curve for a single color channel."""
     num_samples, num_images = intensity_samples.shape
     intensity_range = int(np.max(Zmax_precomputed)) - z_min + 1
+    z_mid = int((z_min + z_max) // 2)
 
     data_constraints = num_samples * num_images
     smoothness_constraints = intensity_range - 2
     monotonicity_constraints = intensity_range - 1
-    z_mid_constraint = 1  # New constraint
+    z_mid_constraint = 1
     total_constraints = data_constraints + smoothness_constraints + monotonicity_constraints + z_mid_constraint
 
     mat_A = np.zeros((total_constraints, intensity_range), dtype=np.float64)
@@ -240,10 +254,12 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
     for i in range(num_samples):
         for j in range(num_images):
             z_ij = intensity_samples[i, j]
-            w_ij = weighting_function(z_ij, np.max(Zmax_precomputed[j]))
+            # Use the correct Zmax for this specific sample and exposure
+            w_ij = weighting_function(z_ij, Zmax_precomputed[j])
             
             z_ij_scalar = int(z_ij)
-            w_ij_scalar = float(w_ij) if np.isscalar(w_ij) else float(np.mean(w_ij))
+            # Use the mean weight if w_ij is an array
+            w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
             
             mat_A[k, z_ij_scalar - z_min] = w_ij_scalar
             mat_b[k, 0] = w_ij_scalar * log_exposures[i, j]
@@ -251,12 +267,12 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
 
     for z_k in range(z_min + 1, int(np.max(Zmax_precomputed))):
         w_k = weighting_function(z_k, np.max(Zmax_precomputed[-1]))
-        w_k_scalar = float(w_k) if np.isscalar(w_k) else float(np.mean(w_k))
+        w_k_scalar = np.mean(w_k) if isinstance(w_k, np.ndarray) else float(w_k)
         mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
         k += 1
 
     for z_k in range(z_min, int(np.max(Zmax_precomputed)) - 1):
-        if k < total_constraints - 1:  # Leave space for the new constraint
+        if k < total_constraints - 1:
             mat_A[k, z_k - z_min] = -1
             mat_A[k, z_k - z_min + 1] = 1
             mat_b[k, 0] = 0.001
@@ -264,16 +280,14 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
         else:
             break
 
-    # Add the new constraint: Z_mid = 1 (log(exposure) = 0)
-    z_mid = int((z_min + z_max) // 2)  # Ensure z_mid is an integer
-    if z_mid - z_min < intensity_range:  # Check if the index is within bounds
-        mat_A[k, z_mid - z_min] = 1
-        mat_b[k, 0] = 0  # log(1) = 0
-    else:
-        print(f"Warning: z_mid ({z_mid}) - z_min ({z_min}) is out of bounds for intensity_range ({intensity_range})")
+    # Add the constraint: g(Z_mid) = 0
+    mat_A[k, z_mid - z_min] = 1
+    mat_b[k, 0] = 0
 
     x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
-    return x.flatten()
+    response_curve = x.flatten()
+
+    return response_curve
 
 def process_hdr_images(directory, experiment_title, base_data_folder, smoothing_lambda=1000, num_sets=None):
     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
@@ -441,6 +455,11 @@ def plot_response_curve(intensity_samples, log_exposures, response_curve, z_min,
         ax.set_title('Camera Response Function')
         ax.legend()
         ax.grid(True)
+        
+        # Set y-axis limits symmetrically around 0
+        y_max = max(abs(ax.get_ylim()[0]), abs(ax.get_ylim()[1]))
+        ax.set_ylim(-y_max, y_max)
+
     except Exception as e:
         print(f"Error in plot_response_curve: {str(e)}")
         ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
@@ -559,13 +578,13 @@ def capture_plots(data, adaptive_weight):
 
     return buf
 
-def generate_multi_page_report(processed_data, directory, experiment_title, adaptive_weight, base_data_folder="data"):
+def generate_multi_page_report(processed_data, directory, experiment_title, adaptive_weight, base_data_folder):
     #experiment_folder = os.path.basename(os.path.normpath(directory))
     data_folder = os.path.join(directory, base_data_folder)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f'hdr_report_{experiment_title}_{timestamp}.pdf'
-    output_path = os.path.join(data_folder, output_file)
+    output_path = os.path.join(data_folder, "reports", output_file)
     
     page_width, page_height = letter
     margin = 0.5 * inch
