@@ -100,7 +100,7 @@ def plot_darkcount_images(darkcount_array, exposure_times):
 def is_monotonic(y):
     return np.all(np.diff(y) >= 0)
 
-def is_approximately_monotonic(y, tolerance=0.05):
+def is_approximately_monotonic(y, tolerance=0.01):
     """
     Check if the sequence is approximately monotonic.
     
@@ -124,7 +124,7 @@ def is_approximately_monotonic(y, tolerance=0.05):
     
     return np.all(np.abs(negative_diffs) <= max_allowed_negative)
 
-def find_monotonic_range(y, tolerance=0.05):
+def find_monotonic_range(y, tolerance=0.01):
     """
     Find the largest approximately monotonic range from the beginning of the sequence.
     
@@ -256,7 +256,7 @@ def plot_specific_pixel_intensities(exposure_times, darkcount_array):
 def linear_fit(t, slope, intercept):
     return slope * t + intercept
 
-def calculate_slinear(exposure_times, darkcount_array, Sd, b, Smax, smooth, threshold=0.05, num_points=1000):
+def calculate_slinear(exposure_times, darkcount_array, Sd, b, Smax, smooth, threshold=0.1, num_points=1000):
     num_pixels = darkcount_array.shape[1] * darkcount_array.shape[2]
     Slinear = np.zeros(num_pixels)
     
