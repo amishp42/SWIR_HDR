@@ -56,6 +56,51 @@ def import_and_save_raw(directory, experiment_title, base_data_folder):
     print(f"Raw data saved in: {data_folder}")
     return data_folder
 
+def import_sim_and_save_raw(directory, experiment_title, base_data_folder):
+    laser_wavelengths = {'1': '670'}
+    emission_filters = {'12': 'BP1150'}
+
+    data_folder = os.path.join(directory, base_data_folder,"raw_data")
+    os.makedirs(data_folder, exist_ok=True)
+
+    for laser_key, laser_value in laser_wavelengths.items():
+        for filter_key, filter_value in emission_filters.items():
+            key = f"{experiment_title}_{laser_value}_{filter_value}"
+            image_files = [f for f in os.listdir(directory) if f.startswith(f"{experiment_title}_{laser_key}_{filter_key}")]
+            image_files.sort(key=lambda x: float(x.split('_')[-1][:-3]))
+            print(image_files)
+            image_data = []
+            exposure_times = []
+
+            for file in image_files:
+                file_path = os.path.join(directory, file)
+                with h5py.File(file_path, 'r') as h5f:
+                    image = h5f['image'][()]
+                    #exposure_time = h5f['TimeExposure'][()].item()
+                    exposure_time = h5f.attrs['TimeExposure']
+                    # Ensure image is 2D
+                    if image.ndim == 3 and image.shape[0] == 1:
+                        image = image.squeeze(0)
+                    
+                    image_data.append(image)
+                    exposure_times.append(exposure_time)
+
+            # Convert lists to numpy arrays
+            image_array = np.array(image_data)
+            exposure_times = np.array(exposure_times)
+
+            # Create a structured array with exposure times as the first dimension
+            structured_data = np.zeros(len(exposure_times), dtype=[('exposure_time', float), ('image', float, (640, 512))])
+            structured_data['exposure_time'] = exposure_times
+            structured_data['image'] = image_array
+
+            print(f"Final shape of image array for {key}: {structured_data.shape}, dtype: {structured_data.dtype}")
+
+            np.save(os.path.join(data_folder, f"{key}_raw.npy"), structured_data)
+
+    print(f"Raw data saved in: {data_folder}")
+    return data_folder
+
 def clip_and_save(directory, Slinear, base_data_folder):
     raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
     clipped_data_folder = os.path.join(directory, base_data_folder, "processed_data")

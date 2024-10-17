@@ -13,6 +13,7 @@ def create_circle_mask(width=640, height=512, num_circles=12, min_avg_intensity=
     # Generate a saturation level map
     saturation_map = np.random.normal(mean_saturation_level, std_saturation_level, (height, width))
     saturation_map = np.clip(saturation_map, 0, None)  # Ensure non-negative values
+    Smax = np.load("C:\\Users\\apate\\OneDrive - Northeastern University\\Dennis Lab site\\AP\\Spectral_demixing\\notebooks\\PIPELINE\\data\\Smax.npy")
     
     # Create a new array with a background of 0 or use the initial condition
     if initial_condition is None:
@@ -100,17 +101,19 @@ def generateWellData(exposuretimes):
 	    circle_mask (numpy array): A 3D numpy array representing the simulated well data.
         pix_val_store (numpy array): A 1D numpy array containing the true pixel values for each circle.
     """
-    
+    bias = np.load("C:\\Users\\apate\\OneDrive - Northeastern University\\Dennis Lab site\\AP\\Spectral_demixing\\notebooks\\PIPELINE\\data\\b.npy")
+    Sd = np.load("C:\\Users\\apate\\OneDrive - Northeastern University\\Dennis Lab site\\AP\\Spectral_demixing\\notebooks\\PIPELINE\\data\\Sd.npy")
     #Start with blank 640x512 image
     shape = [640, 512]
     simulatedNoise = np.empty([shape[0],shape[1],len(exposuretimes)], dtype=np.uint16)
     for ind in range (0,len(exposuretimes)):
         
         x = exposuretimes[ind]
-        mean = 196.3845 * x + 1195.5938
+        mean = Sd * x + bias
         std_dev = 3.0389 * x + 13.9957
         
         simulatedNoise[:,:,ind] = np.random.normal(loc=mean, scale=std_dev, size=shape).astype(np.uint16)
+        plt.imshow(simulatedNoise[:,:,ind], cmap = "gray")
     
     #import darkcount information from dark count analysis
     #provide exposure times between the ranges 0.01 and 10 seconds (linear range of noise)

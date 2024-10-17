@@ -122,7 +122,7 @@ def adaptive_weight(z, Zmax):
         weight[z <= middle] = (z[z <= middle] - Zmin) / (middle[z <= middle] - Zmin)
         weight[z > middle] = (Zmax[z > middle] - z[z > middle]) / (Zmax[z > middle] - middle[z > middle])
         return weight
-
+    
 def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, return_all=False):
     """Calculate an unscaled radiance map for each pixel from the response curve."""
     logger.info("Starting computeRadianceMap function")
