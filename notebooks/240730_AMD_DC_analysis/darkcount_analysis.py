@@ -15,7 +15,10 @@ def import_darkcount_data(directory):
     """
     Import darkcount data from H5 files in the specified directory.
     """
-    darkcount_files = [f for f in os.listdir(directory) if f.startswith('darkcount') and f.endswith('.h5')]
+    # use this version if there is only darkcount data that can all be considered together in the folder (will consider all the files)
+    darkcount_files = [f for f in os.listdir(directory) if f.endswith('.h5')]
+    # use this version if it's a folder with mixed data -- include the consistent first part of the darkcount file names
+    #darkcount_files = [f for f in os.listdir(directory) if f.startswith('darkcount') and f.endswith('.h5')]
     darkcount_files.sort(key=lambda x: float(x.split('_')[-1][:-3]))  # Sort by the number before .h5
 
     darkcount_data = []
