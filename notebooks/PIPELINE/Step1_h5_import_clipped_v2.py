@@ -319,7 +319,7 @@ def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_dat
     y_position -= 20
     
     # Calculate dark current ranges for the first and last exposure time as examples
-    first_time = raw_data['exposure_time'][5]  # Get the first exposure time
+    first_time = raw_data['exposure_time'][0]  # Get the first exposure time
     last_time = raw_data['exposure_time'][-1]  # Get the last exposure time
     
     dc_first = Sd * first_time + b
