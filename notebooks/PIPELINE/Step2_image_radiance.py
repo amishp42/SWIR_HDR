@@ -32,109 +32,312 @@ class FilenamePlaceholder(Flowable):
         self.canv.setFont('Helvetica', 9)
         self.canv.drawString(0, 0, f"File: {self.filename}")
 
-def load_processed_data(directory, experiment_title, base_data_folder="data"):
-    # Extract the last part of the directory path
-    experiment_folder = os.path.basename(os.path.normpath(directory))
+
+
+def precompute_zmax(Slinear, Sd, bias, exposure_times):
+    """
+    Precompute Zmax for all pixels and exposure times.
     
-    # Create the full path for the data folder
-    data_folder = os.path.join(base_data_folder, experiment_folder)
+    Args:
+    Slinear (numpy.ndarray): Array of linear saturation levels for each pixel.
+    Sd (numpy.ndarray): Array of dark current slopes for each pixel.
+    bias (numpy.ndarray): Array of bias values for each pixel.
+    exposure_times (numpy.ndarray): Array of exposure times.
     
-    # Check if the data folder exists
-    if not os.path.exists(data_folder):
-        raise FileNotFoundError(f"Data folder not found: {data_folder}")
+    Returns:
+    numpy.ndarray: Array of Zmax values with shape [num_exposure_times, height, width]
+    """
+    num_exposures = len(exposure_times)
+    height, width = Slinear.shape
+    
+    # Reshape arrays for broadcasting
+    Slinear = Slinear.reshape(1, height, width)
+    Sd = Sd.reshape(1, height, width)
+    bias = bias.reshape(1, height, width)
+    exposure_times = exposure_times.reshape(num_exposures, 1, 1)
+    
+    # Compute Zmax for all pixels and exposure times
+    Zmax = Slinear - (Sd * exposure_times + bias)
+    
+    return Zmax
 
-    # Load darkcount-subtracted (denoised) images
-    denoised_images = {}
-    for file in os.listdir(data_folder):
-        if file.endswith("_denoised.npy"):
-            key = file.split('_')[0]  # Assuming the key is the first part of the filename
-            denoised_file = os.path.join(data_folder, file)
-            denoised_images[key] = np.load(denoised_file)
-            print(f"Loaded denoised images for {key} from: {denoised_file}")
+def debevec_weight(z, Zmax):
+     """
+     Compute the weighting function for each pixel using the Debevec weighting function.
+     """
+     Zmin = 0  # Assuming the minimum possible pixel value is 0
+    
+     # Ensure z and Zmax are scalars or have the same shape
+     if np.isscalar(z) and np.isscalar(Zmax):
+         middle = (Zmax + Zmin) / 2
+         if z <= middle:
+             return (z - Zmin) / (middle - Zmin)
+         else:
+             return (Zmax - z) / (Zmax - middle)
+     else:
+         z = np.atleast_2d(z)
+         Zmax = np.atleast_2d(Zmax)
+         if z.shape != Zmax.shape:
+             Zmax = np.full_like(z, Zmax)
+        
+         weight = np.zeros_like(z, dtype=np.float32)
+         middle = (Zmax + Zmin) / 2
+         weight[z <= middle] = (z[z <= middle] - Zmin) / (middle[z <= middle] - Zmin)
+         weight[z > middle] = (Zmax[z > middle] - z[z > middle]) / (Zmax[z > middle] - middle[z > middle])
+         return weight
 
-    # Load exposure times
-    exposure_times_file = os.path.join(data_folder, f"{experiment_title}_exposure_times.npy")
-    exposure_times = np.load(exposure_times_file)
-    print(f"Loaded exposure times from: {exposure_times_file}")
+def robertson_weight(z, Zmax):
+    """
+    Compute the weighting function for each pixel using a Gaussian function according to Robertson (2010)
+    centered at the midpoint between 0 and Zmax.
+    
+    Args:
+        z: Input pixel values (scalar or array)
+        Zmax: Maximum possible pixel value (scalar or array)
+        
+    Returns:
+        Weights between 0 and 1, with maximum weight at the midpoint
+    """
+    Zmin = 0  # Assuming the minimum possible pixel value is 0
+    
+    # Handle scalar inputs
+    if np.isscalar(z) and np.isscalar(Zmax):
+        middle = (Zmax + Zmin) / 2
+        # Using standard deviation of 1/4 of the range for a reasonable spread
+        sigma = (Zmax - Zmin) / 4
+        # Gaussian function
+        weight = np.exp(-((z - middle) ** 2) / (2 * sigma ** 2))
+        return weight
+    
+    # Handle array inputs
+    else:
+        z = np.atleast_2d(z)
+        Zmax = np.atleast_2d(Zmax)
+        if z.shape != Zmax.shape:
+            Zmax = np.full_like(z, Zmax)
+            
+        middle = (Zmax + Zmin) / 2
+        # Using standard deviation of 1/4 of the range for a reasonable spread
+        sigma = (Zmax - Zmin) / 4
+        # Gaussian function
+        weight = np.exp(-((z - middle) ** 2) / (2 * sigma ** 2))
+        return weight
 
-    return {
-        'denoised_images': denoised_images,
-        'exposure_times': exposure_times
-    }
+def broadhat_weight(z, Zmax):
+    """
+    Compute the weighting function for each pixel using a broadhat function.
+    
+    Args:
+    z (numpy.ndarray): Pixel intensity values
+    Zmax (numpy.ndarray): Maximum pixel intensity values (same shape as z)
+    
+    Returns:
+    numpy.ndarray: Weights calculated using the broadhat function
+    """
+    x = z / Zmax
+    return np.maximum(0, 1 - ((x / 0.5) - 1)**12)
+
+def linear_weight(z, Zmax):
+    """
+    Compute the weighting function for each pixel using a linear function.
+    
+    Args:
+    z (numpy.ndarray): Pixel intensity values
+    Zmax (numpy.ndarray): Maximum pixel intensity values (same shape as z)
+    
+    Returns:
+    numpy.ndarray: Weights calculated using the linear function
+    """
+    x = z / Zmax
+    return x
+
+def no_weight(z, Zmax):
+    """
+    No weighting function, returns 1.
+    """
+    return 1
+
+def square_weight(z, Zmax):
+    """
+    Compute the weighting function for each pixel using a square function between Zmin and Zmax.
+    
+    Args:
+    z (numpy.ndarray): Pixel intensity values
+    Zmax (numpy.ndarray): Maximum pixel intensity values (same shape as z)
+    
+    Returns:
+    numpy.ndarray: Weights calculated using the square function
+    """
+    Zmin = 0
+    if z > (Zmin+200) and z < (Zmax - 200):
+         x = 1
+    else:
+         x = 0
+    return x
 
 
-def linearWeight(pixel_value, z_min, z_max):
-    """Linear weighting function based on pixel intensity."""
-    pixel_value = np.asarray(pixel_value)
-    mid = (z_min + z_max) / 2
-    weight = np.where(pixel_value <= mid, 
-                      pixel_value - z_min, 
-                      z_max - pixel_value)
-    return weight.astype(np.float32)
+""" def load_clipped_denoised_data(directory, experiment_title, base_data_folder, extract=False):
+    """
+    """
+    Load clipped and denoised data from the final_data folder.
+    
+    Args:
+    directory (str): The main directory containing the data folders.
+    experiment_title (str): The title of the experiment.
+    base_data_folder (str): The name of the base data folder.
+    extract (bool): If True, extract data into separate standard arrays.
+    
+    Returns:
+    dict: A dictionary containing the loaded data for each laser-filter combination.
+    """
+    """
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    
+    data_dict = {}
+    
+    for file in os.listdir(final_data_folder):
+        if file.endswith("_clipped_denoised.npy"):
+            key = file[:-21]  # Remove '_clipped_denoised.npy'
+            file_path = os.path.join(final_data_folder, file)
+            
+            loaded_data = np.load(file_path)
+            
+            if extract:
+                # Extract data into separate standard arrays
+                images = loaded_data['image']
+                exposure_times = loaded_data['exposure_time']
+                data_dict[key] = {
+                    'images': images,
+                    'exposure_times': exposure_times
+                }
+            else:
+                # Keep data in the structured array format
+                data_dict[key] = loaded_data
+    
+    return data_dict
 
-def estimate_radiance(images, exposure_times):
-    """Estimate the relative radiance for each pixel."""
+def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, return_all=False, crf=None, weighting_function=debevec_weight):
+    logger.info("Starting computeRadianceMap function")
+    import os
+
+    abspath = os.path.abspath(__file__)
+    dname = os.path.dirname(abspath.p)
+    os.chdir(dname)
+    intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
+    logger.info("Finished sampleIntensities function")
+    if crf == None:
+        response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, weighting_function, z_min, z_max, Zmax_precomputed)
+    elif  crf == True:
+        response_curve = np.load("C:\\Users\\apate\\OneDrive - Northeastern University\\Dennis Lab site\\Image processing\\IR VIVO data\\developing functions and PIPELINE data (archive)\\PIPELINE_data\\240329_Water_immersed\\final_data\\Water_immersed_crf_data.npz")
+    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
+
+    num_images, height, width = images.shape
+    radiance_map = np.zeros((height, width), dtype=np.float32)
+    sum_weights = np.zeros((height, width), dtype=np.float32)
+
+    for i in range(num_images):
+        w = weighting_function(images[i], Zmax_precomputed[i])
+        
+        # Convert images to integer indices
+        indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
+        
+        radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
+        sum_weights += w
+
+    sum_weights[sum_weights == 0] = 1e-6
+    radiance_map /= sum_weights
+
+    logger.info("Finished computeRadianceMap function")
+
+    if return_all:
+        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
+    else:
+        return radiance_map
+ """
+
+                 
+def estimate_radiance(images, exposure_times, Zmax_precomputed, weighting_function=debevec_weight):
     num_images, height, width = images.shape
     radiance = np.zeros((height, width))
     weight_sum = np.zeros((height, width))
     
     for i in range(num_images):
-        weights = 1 - 2 * np.abs(images[i].astype(float) / np.max(images[i]) - 0.5)
+        weights = weighting_function(images[i], Zmax_precomputed[i])
         radiance += weights * images[i].astype(float) / exposure_times[i]
         weight_sum += weights
     
     return radiance / np.maximum(weight_sum, 1e-6)
 
-def sampleIntensities(images, exposure_times, num_samples=50000):
+def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=50000):
     """Sample pixel intensities from the exposure stack."""
     num_images, height, width = images.shape
-    z_min, z_max = int(np.min(images)), int(np.max(images))
-    print(f"z_max: {z_max}; z_min: {z_min}")
+    z_min = 0  # Assuming the minimum is always 0 after dark current subtraction
+    z_max = np.max(Zmax_precomputed)  # Use the maximum value across all Zmax_precomputed
+    logger.info(f"z_max: {z_max}; z_min: {z_min}")
 
-    radiance = estimate_radiance(images, exposure_times)
+    # Ensure num_samples is an integer
+    num_samples = int(num_samples)
+    logger.info(f"num_samples: {num_samples}")
+
+    # Use the updated estimate_radiance function that takes Zmax_precomputed
+    radiance = estimate_radiance(images, exposure_times, Zmax_precomputed)
 
     # Logarithmic binning   
-    num_bins = min(num_samples // num_images, z_max - z_min + 1)
+    num_bins = min(num_samples // num_images, int(z_max - z_min + 1))
+    num_bins = max(1, int(num_bins))  # Ensure at least one bin
+    logger.info(f"num_bins: {num_bins}")
+
     bins = np.logspace(np.log10(z_min + 1), np.log10(z_max + 1), num_bins + 1) - 1
     bins = np.unique(bins.astype(int))
+    logger.info(f"Number of unique bins: {len(bins)}")
 
     sampled_pixels = []
-    for img in images:
-        for i in range(len(bins) - 1):
-            bin_mask = (img >= bins[i]) & (img < bins[i+1])
+    for i, img in enumerate(images):
+        for j in range(len(bins) - 1):
+            bin_mask = (img >= bins[j]) & (img < bins[j+1])
             pixels_in_bin = np.where(bin_mask)
             if len(pixels_in_bin[0]) > 0:
-                num_to_sample = min(len(pixels_in_bin[0]), num_samples // (num_images * num_bins))
+                num_to_sample = min(len(pixels_in_bin[0]), num_samples // (num_images * len(bins)))
+                num_to_sample = max(1, int(num_to_sample))  # Ensure at least 1 sample
+                logger.info(f"Sampling {num_to_sample} pixels from bin {j} in image {i}")
                 sampled_indices = np.random.choice(len(pixels_in_bin[0]), num_to_sample, replace=False)
-                sampled_pixels.extend(list(zip(pixels_in_bin[0][sampled_indices], pixels_in_bin[1][sampled_indices])))
+                sampled_pixels.extend(list(zip(pixels_in_bin[0][sampled_indices], pixels_in_bin[1][sampled_indices], [i]*num_to_sample)))
 
-    intensity_samples = np.zeros((len(sampled_pixels), num_images), dtype=np.uint16)
+    logger.info(f"Total sampled pixels: {len(sampled_pixels)}")
+
+    intensity_samples = np.zeros((len(sampled_pixels), num_images), dtype=np.float32)
     log_exposures = np.zeros((len(sampled_pixels), num_images))
 
-    for i, (row, col) in enumerate(sampled_pixels):
+    for i, (row, col, img_idx) in enumerate(sampled_pixels):
         for j in range(num_images):
             intensity_samples[i, j] = images[j, row, col]
             log_exposures[i, j] = np.log(radiance[row, col] * exposure_times[j] + 1e-10)
 
-    
-    # Relaxed validity criteria
-    valid_samples = np.sum((intensity_samples > 0) & (intensity_samples < z_max), axis=1) >= num_images // 2
+    # Relaxed validity criteria using Zmax_precomputed
+    valid_samples = np.sum((intensity_samples > 0) & (intensity_samples < Zmax_precomputed[:, row, col]), axis=1) >= num_images // 2
     intensity_samples = intensity_samples[valid_samples]
     log_exposures = log_exposures[valid_samples]
 
-    print(f"Number of valid samples: {intensity_samples.shape[0]}")
+    logger.info(f"Number of valid samples: {intensity_samples.shape[0]}")
 
     return intensity_samples, log_exposures, z_min, z_max
 
-def computeResponseCurve(intensity_samples, log_exposures, smoothing_lambda, weighting_function, z_min, z_max):
-    """Find the camera response curve for a single color channel."""
+def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, weighting_function, z_min, z_max, Zmax_precomputed):
+    """
+    Compute the response curve from the sampled pixel intensities.
+    Uses a weighted least squares optimization with a smoothness and monotonicity constraint.
+    """
+    
     num_samples, num_images = intensity_samples.shape
-    intensity_range = z_max - z_min + 1
+    intensity_range = int(np.max(Zmax_precomputed)) - z_min + 1
+    z_mid = int((z_min + z_max) // 2)
 
     data_constraints = num_samples * num_images
     smoothness_constraints = intensity_range - 2
     monotonicity_constraints = intensity_range - 1
-    total_constraints = data_constraints + smoothness_constraints + monotonicity_constraints
+    z_mid_constraint = 1
+    total_constraints = data_constraints + smoothness_constraints + monotonicity_constraints + z_mid_constraint
 
     mat_A = np.zeros((total_constraints, intensity_range), dtype=np.float64)
     mat_b = np.zeros((total_constraints, 1), dtype=np.float64)
@@ -143,18 +346,25 @@ def computeResponseCurve(intensity_samples, log_exposures, smoothing_lambda, wei
     for i in range(num_samples):
         for j in range(num_images):
             z_ij = intensity_samples[i, j]
-            w_ij = weighting_function(z_ij, z_min, z_max)
-            mat_A[k, z_ij - z_min] = w_ij
-            mat_b[k, 0] = w_ij * log_exposures[i, j]
+            # Use the correct Zmax for this specific sample and exposure
+            w_ij = weighting_function(z_ij, Zmax_precomputed[j])
+            
+            z_ij_scalar = int(z_ij)
+            # Use the mean weight if w_ij is an array
+            w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
+            
+            mat_A[k, z_ij_scalar - z_min] = w_ij_scalar
+            mat_b[k, 0] = w_ij_scalar * log_exposures[i, j]
             k += 1
 
-    for z_k in range(z_min + 1, z_max):
-        w_k = weighting_function(z_k, z_min, z_max)
-        mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k * smoothing_lambda * np.array([-1, 2, -1])
+    for z_k in range(z_min + 1, int(np.max(Zmax_precomputed))):
+        w_k = weighting_function(z_k, np.max(Zmax_precomputed[-1]))
+        w_k_scalar = np.mean(w_k) if isinstance(w_k, np.ndarray) else float(w_k)
+        mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
         k += 1
 
-    for z_k in range(z_min, z_max - 1):
-        if k < total_constraints:
+    for z_k in range(z_min, int(np.max(Zmax_precomputed)) - 1):
+        if k < total_constraints - 1:
             mat_A[k, z_k - z_min] = -1
             mat_A[k, z_k - z_min + 1] = 1
             mat_b[k, 0] = 0.001
@@ -162,71 +372,71 @@ def computeResponseCurve(intensity_samples, log_exposures, smoothing_lambda, wei
         else:
             break
 
+    # Add the constraint: g(Z_mid) = 0
+    mat_A[k, z_mid - z_min] = 1
+    mat_b[k, 0] = 0
+
     x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
-    return x.flatten()
+    response_curve = x.flatten()
 
-def computeRadianceMap(images, exposure_times, smoothing_lambda=1000, return_all=False):
-    """Calculate an unscaled radiance map for each pixel from the response curve."""
-    intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times)
-    response_curve = computeResponseCurve(intensity_samples, log_exposures, smoothing_lambda, linearWeight, z_min, z_max)
-    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
+    return response_curve
 
-    num_images, height, width = images.shape
-    radiance_map = np.zeros((height, width), dtype=np.float32)
-    sum_weights = np.zeros((height, width), dtype=np.float32)
+def process_hdr_images(directory, experiment_title, base_data_folder, smoothing_lambda=1000, num_sets=None):
+    """
+    Process the HDR images and compute the radiance map.
 
-    for i in range(num_images):
-        w = linearWeight(images[i], z_min, z_max)
-        radiance_map += w * (response_curve[np.clip(images[i] - z_min, 0, len(response_curve) - 1)] - np.log(exposure_times[i]))
-        sum_weights += w
+    Args:
+        directory (str): The directory containing the data.
+        experiment_title (str): The title of the experiment.
+        base_data_folder (str): The base folder for the data output.
+        smoothing_lambda (float, optional): The smoothing parameter for the response curve. Defaults to 1000.
+        num_sets (int, optional): The number of sets of data to process. Defaults to None.
 
-    sum_weights[sum_weights == 0] = 1e-6
-    radiance_map /= sum_weights
-
-    if return_all:
-        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
-    else:
-        return radiance_map
-
-def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder="data"):
-    """Save the unscaled radiance map."""
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder)
-    os.makedirs(data_folder, exist_ok=True)
-
-    radiance_file = os.path.join(data_folder, f"{experiment_title}_radiance_map.npy")
-    np.save(radiance_file, radiance_map)
-    print(f"Radiance map saved to: {radiance_file}")
+    """
     
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    
+    # Load clipped and denoised data
+    data_dict = load_clipped_denoised_data(directory, experiment_title, base_data_folder)
+    os.chdir(final_data_folder)
+    coefficient_folder = base_data_folder
 
-
-# Main processing function
-def process_hdr_images(directory, experiment_title, base_data_folder="data", smoothing_lambda=1000):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder)
-    denoised_files = [f for f in os.listdir(data_folder) if f.endswith('_denoised.npy')]
-    exposure_times_file = os.path.join(data_folder, f"{experiment_title}_exposure_times.npy")
-    exposure_times = np.load(exposure_times_file)
+    # Load Slinear, Sd, and bias arrays
+    Slinear = np.load(os.path.join(coefficient_folder, 'Smax.npy'))
+    Sd = np.load(os.path.join(coefficient_folder, 'Sd.npy'))
+    bias = np.load(os.path.join(coefficient_folder, 'b.npy'))
     
     processed_data = []
     
-    for npy_filename in denoised_files:
-        images = np.load(os.path.join(data_folder, npy_filename))
+    # Limit the number of sets to process if specified
+    if num_sets is not None:
+        data_dict = dict(list(data_dict.items())[:num_sets])
+    
+    for key, data in data_dict.items():
+        images = data['image']
+        exposure_times = data['exposure_time']
         
-        if images.dtype != np.uint16:
-            logger.warning(f"Image data in {npy_filename} is not uint16. Consider updating the save process.")
+        print(f"Processing {key}")
+        print(f"Images shape: {images.shape}")
+        print(f"Exposure times shape: {exposure_times.shape}")
+        print(f"Slinear shape: {Slinear.shape}")
+        print(f"Sd shape: {Sd.shape}")
+        print(f"bias shape: {bias.shape}")
         
         # Use return_all=True to get all the computed data
+        Zmax_precomputed = precompute_zmax(Slinear, Sd, bias, exposure_times)
+        print(f"Zmax_precomputed shape: {Zmax_precomputed.shape}")
+        
         radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
-            images, exposure_times, smoothing_lambda=smoothing_lambda, return_all=True
+            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, return_all=True
         )
         
-        radiance_map_filename = f"{npy_filename[:-12]}_radiance_map.npy"
-        np.save(os.path.join(data_folder, radiance_map_filename), radiance_map)
-        logger.info(f"Radiance map saved to: {os.path.join(data_folder, radiance_map_filename)}")
+        radiance_map_filename = f"{key}_radiance_map.npy"
+        np.save(os.path.join(final_data_folder, radiance_map_filename), radiance_map)
+        logger.info(f"Radiance map saved to: {os.path.join(final_data_folder, radiance_map_filename)}")
         
         processed_data.append({
-            'filename': npy_filename,
+            'key': key,
             'radiance_map': radiance_map,
             'response_curve': response_curve,
             'z_min': z_min,
@@ -235,134 +445,229 @@ def process_hdr_images(directory, experiment_title, base_data_folder="data", smo
             'log_exposures': log_exposures
         })
         
-        logger.info(f"Processed {npy_filename}")
+        logger.info(f"Processed {key}")
 
     logger.info("Finished processing all files.")
     return processed_data
 
 
+
+def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder):
+    """Save the unscaled radiance map."""
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    os.makedirs(final_data_folder, exist_ok=True)
+
+    radiance_file = os.path.join(final_data_folder, f"{experiment_title}_radiance_map.npy")
+    np.save(radiance_file, radiance_map)
+    print(f"Radiance map saved to: {radiance_file}")
+
+# def process_hdr_images(directory, experiment_title, base_data_folder, smoothing_lambda=1000):
+#     #experiment_folder = os.path.basename(os.path.normpath(directory))
+#     #data_folder = os.path.join(base_data_folder, experiment_folder)
+#     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    
+#     # Load clipped and denoised data
+#     data_dict = load_clipped_denoised_data(directory, experiment_title, base_data_folder)
+    
+#     coefficient_folder = '/Users/allisondennis/Spectral_demixing/notebooks/PIPELINE/data/'
+
+#     # Load Slinear, Sd, and bias arrays
+#     #Slinear = np.load(os.path.join(directory, base_data_folder, 'Slinear.npy'))
+#     Slinear = np.load(os.path.join(coefficient_folder, 'Smax.npy'))
+#     Sd = np.load(os.path.join(coefficient_folder, 'Sd.npy'))
+#     bias = np.load(os.path.join(coefficient_folder, 'b.npy'))
+    
+#     processed_data = []
+    
+#     for key, data in data_dict.items():
+#         images = data['image']
+#         exposure_times = data['exposure_time']
+        
+#         print(f"Processing {key}")
+#         print(f"Images shape: {images.shape}")
+#         print(f"Exposure times shape: {exposure_times.shape}")
+#         print(f"Slinear shape: {Slinear.shape}")
+#         print(f"Sd shape: {Sd.shape}")
+#         print(f"bias shape: {bias.shape}")
+        
+#         # Use return_all=True to get all the computed data
+#         Zmax_precomputed = precompute_zmax(Slinear, Sd, bias, exposure_times)
+#         print(f"Zmax_precomputed shape: {Zmax_precomputed.shape}")
+        
+#         radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
+#             images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, return_all=True
+#         )
+        
+#         radiance_map_filename = f"{key}_radiance_map.npy"
+#         np.save(os.path.join(final_data_folder, radiance_map_filename), radiance_map)
+#         logger.info(f"Radiance map saved to: {os.path.join(final_data_folder, radiance_map_filename)}")
+        
+#         processed_data.append({
+#             'key': key,
+#             'radiance_map': radiance_map,
+#             'response_curve': response_curve,
+#             'z_min': z_min,
+#             'z_max': z_max,
+#             'intensity_samples': intensity_samples,
+#             'log_exposures': log_exposures
+#         })
+        
+#         logger.info(f"Processed {key}")
+
+#     logger.info("Finished processing all files.")
+#     return processed_data
+
 def plot_weighting_function(weighting_function, z_min, z_max, ax=None):
-    """Plot the weighting function against pixel intensity."""
     if ax is None:
         ax = plt.gca()
-    pixel_values = np.arange(z_min, z_max + 1)
-    weights = [weighting_function(z, z_min, z_max) for z in pixel_values]
-    ax.plot(pixel_values, weights)
-    ax.set_xlabel("Pixel Intensity")
-    ax.set_ylabel("Weight")
-    ax.grid(True)
+    try:
+        pixel_values = np.arange(z_min, z_max + 1)
+        weights = np.squeeze(weighting_function(pixel_values, z_max))
+        ax.plot(pixel_values, weights)
+        ax.set_xlabel("Pixel Intensity")
+        ax.set_ylabel("Weight")
+        ax.grid(True)
+    except Exception as e:
+        print(f"Error in plot_weighting_function: {str(e)}")
+        ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
 def plot_response_curve(intensity_samples, log_exposures, response_curve, z_min, z_max, ax=None):
-    """Plot the camera response function."""
     if ax is None:
         ax = plt.gca()
-    
-    for j in range(intensity_samples.shape[1]):
-        ax.scatter(intensity_samples[:, j], log_exposures[:, j], alpha=0.1, s=1, c='blue')
-    
-    pixel_values = np.arange(z_min, z_max + 1)
-    ax.plot(pixel_values, response_curve, 'r-', linewidth=2, label='Fitted Response Curve')
-    
-    ax.set_xlabel('Pixel Value')
-    ax.set_ylabel('Log Exposure')
-    ax.set_title('Camera Response Function')
-    ax.legend()
-    ax.grid(True)
+    try:
+        print(f"Debug: intensity_samples shape: {intensity_samples.shape}")
+        print(f"Debug: log_exposures shape: {log_exposures.shape}")
+        print(f"Debug: response_curve shape: {response_curve.shape}")
+        print(f"Debug: z_min: {z_min}, z_max: {z_max}")
+
+        for j in range(intensity_samples.shape[1]):
+            ax.scatter(intensity_samples[:, j], log_exposures[:, j], alpha=0.1, s=1, c='blue')
+        
+        pixel_values = np.arange(z_min, z_max + 1)
+        
+        if len(response_curve) != len(pixel_values):
+            print(f"Warning: response_curve length ({len(response_curve)}) doesn't match pixel_values length ({len(pixel_values)})")
+            min_length = min(len(response_curve), len(pixel_values))
+            response_curve = response_curve[:min_length]
+            pixel_values = pixel_values[:min_length]
+        
+        ax.plot(pixel_values, response_curve, 'r-', linewidth=2, label='Fitted Response Curve')
+        
+        ax.set_xlabel('Pixel Value')
+        ax.set_ylabel('Log Exposure')
+        ax.set_title('Camera Response Function')
+        ax.legend()
+        ax.grid(True)
+        
+        # Set y-axis limits symmetrically around 0
+        y_max = max(abs(ax.get_ylim()[0]), abs(ax.get_ylim()[1]))
+        ax.set_ylim(-y_max, y_max)
+
+    except Exception as e:
+        print(f"Error in plot_response_curve: {str(e)}")
+        ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
 def plot_crf_residuals(intensity_samples, log_exposures, response_curve, z_min, ax=None):
-    """Plot the residuals of the camera response function."""
     if ax is None:
         ax = plt.gca()
-    
-    for j in range(intensity_samples.shape[1]):
-        residuals = log_exposures[:, j] - response_curve[intensity_samples[:, j] - z_min]
-        ax.scatter(intensity_samples[:, j], residuals, alpha=0.1, s=1, c='blue')
-    
-    ax.axhline(y=0, color='r', linestyle='-')
-    ax.set_xlabel('Pixel Value')
-    ax.set_ylabel('Residuals')
-    ax.set_title('CRF Residuals')
-    ax.grid(True)
+    try:
+        for j in range(intensity_samples.shape[1]):
+            residuals = log_exposures[:, j] - response_curve[np.clip(intensity_samples[:, j].astype(int) - z_min, 0, len(response_curve) - 1)]
+            ax.scatter(intensity_samples[:, j], residuals, alpha=0.1, s=1, c='blue')
+        
+        ax.axhline(y=0, color='r', linestyle='-')
+        ax.set_xlabel('Pixel Value')
+        ax.set_ylabel('Residuals')
+        ax.set_title('CRF Residuals')
+        ax.grid(True)
+    except Exception as e:
+        print(f"Error in plot_crf_residuals: {str(e)}")
+        ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
 def plot_log_log_crf(response_curve, z_min, z_max, ax=None):
-    """Plot the camera response function in log-log scale."""
     if ax is None:
         ax = plt.gca()
-    
-    pixel_values = np.arange(z_min, z_max + 1)
-    ax.plot(pixel_values, response_curve, 'r-', linewidth=2, label='Fitted Response Curve')
-    
-    ax.set_xlabel('Pixel Value')
-    ax.set_ylabel('Log Exposure')
-    ax.set_title('Camera Response Function (Log-Log)')
-    ax.set_xscale('log')
-    ax.set_yscale('linear')
-    ax.legend()
-    ax.grid(True)
+    try:
+        pixel_values = np.arange(z_min, z_max + 1)
+        
+        min_length = min(len(response_curve), len(pixel_values))
+        response_curve = response_curve[:min_length]
+        pixel_values = pixel_values[:min_length]
+        
+        print(f"plot_log_log_crf - pixel_values shape: {pixel_values.shape}, response_curve shape: {response_curve.shape}")
+        
+        ax.plot(pixel_values, response_curve, 'r-', linewidth=2, label='Fitted Response Curve')
+        
+        ax.set_xlabel('Pixel Value')
+        ax.set_ylabel('Log Exposure')
+        ax.set_title('Camera Response Function (Log-Log)')
+        ax.set_xscale('log')
+        ax.set_yscale('linear')
+        ax.legend()
+        ax.grid(True)
+    except Exception as e:
+        print(f"Error in plot_log_log_crf: {str(e)}")
+        ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
 def plot_radiance_map(radiance_map, ax=None):
-    """Plot the radiance map."""
     if ax is None:
         ax = plt.gca()
-    
-    im = ax.imshow(radiance_map, cmap='viridis')
-    plt.colorbar(im, ax=ax, label='Radiance')
-    ax.set_title('Radiance Map')
+    try:
+        im = ax.imshow(radiance_map, cmap='viridis')
+        plt.colorbar(im, ax=ax, label='Radiance')
+        ax.set_title('Radiance Map')
+    except Exception as e:
+        print(f"Error in plot_radiance_map: {str(e)}")
+        ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
 def plot_radiance_histogram(radiance_map, ax=None):
     if ax is None:
         ax = plt.gca()
-    
-    # Flatten the radiance map and remove any infinite or NaN values
-    radiance_values = radiance_map.flatten()
-    radiance_values = radiance_values[np.isfinite(radiance_values)]
-    
-    # Plot histogram
-    ax.hist(radiance_values, bins=100, range=(np.percentile(radiance_values, 1), np.percentile(radiance_values, 99)), log=True)
-    ax.set_xlabel('Radiance')
-    ax.set_ylabel('Frequency')
-    ax.set_title('Radiance Histogram')
-
-
-def capture_plots(data):
+    try:
+        radiance_values = radiance_map.flatten()
+        radiance_values = radiance_values[np.isfinite(radiance_values)]
+        
+        if len(radiance_values) > 0:
+            ax.hist(radiance_values, bins=100, range=(np.percentile(radiance_values, 1), np.percentile(radiance_values, 99)), log=True)
+            ax.set_xlabel('Radiance')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Radiance Histogram')
+        else:
+            ax.text(0.5, 0.5, "No valid radiance values", ha='center', va='center', transform=ax.transAxes)
+    except Exception as e:
+        print(f"Error in plot_radiance_histogram: {str(e)}")
+        ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
+        
+def capture_plots(data, adaptive_weight):
     # Create a figure with a grid layout
     fig = plt.figure(figsize=(15, 20))
     gs = GridSpec(4, 2, figure=fig, height_ratios=[1, 1, 1, 1])
 
-    # Weighting function
-    ax1 = fig.add_subplot(gs[0, 0])
-    plot_weighting_function(linearWeight, data['z_min'], data['z_max'], ax=ax1)
-    ax1.set_title('Weighting Function', pad=10)
+    plot_functions = [
+        (plot_weighting_function, (0, 0), 'Weighting Function'),
+        (plot_response_curve, (0, 1), 'CRF Fitting'),
+        (plot_log_log_crf, (1, 0), 'Log-Log CRF'),
+        (plot_crf_residuals, (1, 1), 'CRF Residuals'),
+        (plot_radiance_histogram, (2, 0), 'Radiance Histogram'),
+        (plot_radiance_map, (2, 1), 'Log Radiance Map'),
+        (plot_radiance_map, (3, 0), 'Linear Radiance Map')
+    ]
 
-    # CRF fitting
-    ax2 = fig.add_subplot(gs[0, 1])
-    plot_response_curve(data['intensity_samples'], data['log_exposures'], data['response_curve'], data['z_min'], data['z_max'], ax=ax2)
-    ax2.set_title('CRF Fitting', pad=10)
-
-    # Log-log CRF
-    ax3 = fig.add_subplot(gs[1, 0])
-    plot_log_log_crf(data['response_curve'], data['z_min'], data['z_max'], ax=ax3)
-    ax3.set_title('Log-Log CRF', pad=10)
-
-    # CRF residuals
-    ax4 = fig.add_subplot(gs[1, 1])
-    plot_crf_residuals(data['intensity_samples'], data['log_exposures'], data['response_curve'], data['z_min'], ax=ax4)
-    ax4.set_title('CRF Residuals', pad=10)
-
-    # Radiance histogram
-    ax5 = fig.add_subplot(gs[2, 0])
-    plot_radiance_histogram(data['radiance_map'], ax=ax5)
-    ax5.set_title('Radiance Histogram', pad=10)
-
-    # Log radiance map
-    ax6 = fig.add_subplot(gs[2, 1])
-    plot_radiance_map(np.log(data['radiance_map']), ax=ax6)
-    ax6.set_title('Log Radiance Map', pad=10)
-
-    # Linear radiance map
-    ax7 = fig.add_subplot(gs[3, :])
-    plot_radiance_map(data['radiance_map'], ax=ax7)
-    ax7.set_title('Linear Radiance Map', pad=10)
+    for plot_func, (row, col), title in plot_functions:
+        try:
+            ax = fig.add_subplot(gs[row, col])
+            if plot_func == plot_weighting_function:
+                plot_func(adaptive_weight, data['z_min'], data['z_max'], ax=ax)
+            elif plot_func == plot_radiance_map and title == 'Log Radiance Map':
+                plot_func(np.log(data['radiance_map']), ax=ax)
+            else:
+                plot_func(**{k: v for k, v in data.items() if k in plot_func.__code__.co_varnames}, ax=ax)
+            ax.set_title(title, pad=10)
+        except Exception as e:
+            print(f"Error in {title}: {str(e)}")
+            print(f"Data shapes: {', '.join([f'{k}: {v.shape if isinstance(v, np.ndarray) else v}' for k, v in data.items()])}")
+            ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
     plt.tight_layout()
     
@@ -377,14 +682,13 @@ def capture_plots(data):
 
     return buf
 
-
-def generate_multi_page_report(processed_data, directory, experiment_title, base_data_folder="data"):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
-    data_folder = os.path.join(base_data_folder, experiment_folder)
+def generate_multi_page_report(processed_data, directory, experiment_title, adaptive_weight, base_data_folder):
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    data_folder = os.path.join(directory, base_data_folder)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f'hdr_report_{experiment_title}_{timestamp}.pdf'
-    output_path = os.path.join(data_folder, output_file)
+    output_path = os.path.join(data_folder, "reports", output_file)
     
     page_width, page_height = letter
     margin = 0.5 * inch
@@ -414,7 +718,7 @@ def generate_multi_page_report(processed_data, directory, experiment_title, base
     story = []
     
     for data in processed_data:
-        montage = capture_plots(data)
+        montage = capture_plots(data, adaptive_weight)
     
         available_width = page_width - 4*margin
         available_height = page_height - 5*margin
@@ -429,11 +733,11 @@ def generate_multi_page_report(processed_data, directory, experiment_title, base
         new_width = orig_width * scale_factor
         new_height = orig_height * scale_factor
         
-        story.append(FilenamePlaceholder(data['filename']))
+        story.append(FilenamePlaceholder(data['key']))
         story.append(Image(montage, width=new_width, height=new_height))
         story.append(PageBreak())
         
-        logger.info(f"Added report page for {data['filename']}")
+        logger.info(f"Added report page for {data['key']}")
     
     # Add log to the end of the PDF
     logger.info("Finished processing all files.")
@@ -449,3 +753,72 @@ def generate_multi_page_report(processed_data, directory, experiment_title, base
     doc.build(story)
     
     logger.info(f"Report saved as {output_path}")
+
+def save_crf_data(processed_data, directory, experiment_title, base_data_folder):
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
+    data_folder = os.path.join(directory, base_data_folder, "final_data")
+    os.makedirs(data_folder, exist_ok=True)
+
+    crf_file = os.path.join(data_folder, f"{experiment_title}_crf_data.npz")
+    
+    print(f"Number of processed data items: {len(processed_data)}")
+
+    save_dict = {}
+    for i, data in enumerate(processed_data):
+        print(f"\nProcessing data item {i+1}:")
+        for key, value in data.items():
+            if isinstance(value, np.ndarray):
+                print(f"  {key} shape: {value.shape}")
+                save_dict[f'{key}_{i}'] = value
+            else:
+                print(f"  {key}: {value}")
+                save_dict[f'{key}_{i}'] = value
+
+    print("\nSaving CRF data...")
+    try:
+        np.savez(crf_file, **save_dict)
+        print(f"CRF data saved to: {crf_file}")
+        
+        # Verify the saved data
+        verify_data = np.load(crf_file, allow_pickle=True)
+        print("Verified saved data. Keys in the file:")
+        for key in verify_data.keys():
+            print(f"  {key}")
+    except Exception as e:
+        print(f"Error saving CRF data: {str(e)}")
+
+    return crf_file
+
+def load_crf_data(crf_file):
+    """Load the saved CRF data."""
+    print(f"Loading CRF data from: {crf_file}")
+    loaded_data = np.load(crf_file, allow_pickle=True)
+    
+    print("Keys in the loaded file:")
+    for key in loaded_data.keys():
+        print(f"  {key}")
+    
+    processed_data = []
+    i = 0
+    while f'key_{i}' in loaded_data:
+        print(f"Processing data item {i}")
+        data_item = {}
+        for key in ['key', 'radiance_map', 'response_curve', 'z_min', 'z_max', 'intensity_samples', 'log_exposures']:
+            full_key = f'{key}_{i}'
+            if full_key in loaded_data:
+                data_item[key] = loaded_data[full_key]
+                if isinstance(data_item[key], np.ndarray):
+                    print(f"  Loaded {full_key}: ndarray with shape {data_item[key].shape}, dtype: {data_item[key].dtype}")
+                else:
+                    print(f"  Loaded {full_key}: {type(data_item[key])}")
+            else:
+                print(f"  Warning: {full_key} not found in loaded data")
+        if data_item:
+            processed_data.append(data_item)
+        else:
+            print(f"  Warning: No data loaded for item {i}")
+        i += 1
+    
+    print(f"Loaded {len(processed_data)} processed data items")
+    
+    return processed_data

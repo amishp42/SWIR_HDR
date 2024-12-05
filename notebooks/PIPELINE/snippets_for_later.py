@@ -1,4 +1,4 @@
-
+import numpy as np
 # when ready with pre-computed CRF, the calculation of the radiance maps will go much faster....
 
 
