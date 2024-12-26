@@ -36,29 +36,19 @@ def load_parameters(param_directory):
 def process_and_save(directory, experiment_title, base_data_folder, operations=None, params=None):
     """
     Process image data with configurable operations.
-    
-    Args:
-        directory: Base directory containing the data
-        experiment_title: Title of the experiment
-        base_data_folder: Name of the folder to store processed data
-        operations: List of operations to perform ['clip', 'denoise'] or None for raw only
-        params: Dict with processing parameters: {'Slinear': array, 'Sd': float, 'b': float}
     """
     operations = operations or []
     params = params or {}
     
-    # Import raw data first
     raw_folder = import_and_save_raw(directory, experiment_title, base_data_folder)
     
     if not operations:
         return raw_folder
         
-    # Set up output folder based on operations
-    op_names = '_'.join(operations)
-    output_folder = os.path.join(directory, base_data_folder, f"{op_names}_data")
+    # Changed to use processed_data folder
+    output_folder = os.path.join(directory, base_data_folder, "processed_data")
     os.makedirs(output_folder, exist_ok=True)
     
-    # Process each raw file
     for file in os.listdir(raw_folder):
         if file.endswith("_raw.npy"):
             key = file[:-8]
@@ -67,7 +57,6 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=N
             processed_data['exposure_time'] = data['exposure_time']
             images = data['image']
             
-            # Apply operations in sequence
             if 'clip' in operations:
                 if 'Slinear' not in params:
                     raise ValueError("Slinear required for clipping")
@@ -82,13 +71,13 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=N
                 )
             
             processed_data['image'] = images
+            op_names = '_'.join(operations)
             np.save(os.path.join(output_folder, f"{key}_{op_names}.npy"), processed_data)
     
     print(f"Processed data saved in: {output_folder}")
     return output_folder
 
-
-def import_and_save_raw(directory, experiment_title, base_data_folder):
+def import_and_save_raw(directory, experiment_title, base_data_folder, date_cutoff_1='2024/02/13', date_cutoff_2='2024/11/07'):
     """
     Import raw data from h5 files and save as numpy arrays.
     
@@ -96,64 +85,119 @@ def import_and_save_raw(directory, experiment_title, base_data_folder):
         directory: Base directory containing the data
         experiment_title: Title of the experiment
         base_data_folder: Name of the folder to store raw data
-        The tags are 1, 2, 3 for laser wavelengths and 12, 13, 14, 15, 16, 17 for emission filters, which should be changed according to naming convention
+        date_cutoff_1: First cutoff date string in format 'YYYY/MM/DD' 
+        date_cutoff_2: Second cutoff date string in format 'YYYY/MM/DD'
     """
-
+    from datetime import datetime
+    
     laser_wavelengths = {'1': '670', '2': '760', '3': '808'}
-    emission_filters = {'12': 'BP1150', '13': 'BP1200', '14': 'BP1250', '15': 'BP1300', '16': 'BP1350', '17': 'BP1575'}
+    
+    # Define three sets of emission filters
+    early_emission_filters = {
+        '12': 'BP1100', '13': 'BP1150', '14': 'BP1300',
+        '15': 'BP1350', '16': 'BP1500', '17': 'BP1555'
+    }
+    
+    middle_emission_filters = {
+        '12': 'BP1150', '13': 'BP1200', '14': 'BP1250',
+        '15': 'BP1300', '16': 'BP1350', '17': 'BP1575'
+    }
+    
+    latest_emission_filters = {
+        '12': 'BP1150', '13': 'BP1200', '14': 'BP1300',
+        '15': 'BP1350', '16': 'BP1500', '17': 'BP1550'
+    }
+    
     data_folder = os.path.join(directory, base_data_folder, "raw_data")
     os.makedirs(data_folder, exist_ok=True)
     
+    cutoff_datetime_1 = datetime.strptime(date_cutoff_1, '%Y/%m/%d')
+    cutoff_datetime_2 = datetime.strptime(date_cutoff_2, '%Y/%m/%d')
+    
     for laser_key, laser_value in laser_wavelengths.items():
-        for filter_key, filter_value in emission_filters.items():
-            key = f"{experiment_title}_{laser_value}_{filter_value}"
-            image_files = [f for f in os.listdir(directory) if f.startswith(f"{experiment_title}_{laser_key}_{filter_key}")]
-            
-            # Skip if no matching files found
-            if not image_files:
-                print(f"No files found for combination: {key}")
+        for file in os.listdir(directory):
+            if not file.startswith(f"{experiment_title}_{laser_key}_"):
                 continue
                 
-            image_files.sort(key=lambda x: float(x.split('_')[-1][:-3]))
-            image_data = []
-            exposure_times = []
-            
-            for file in image_files:
-                file_path = os.path.join(directory, file)
-                try:
-                    with h5py.File(file_path, 'r') as h5f:
-                        image = h5f['Cube']['Images'][()]
-                        exposure_time = h5f['Cube']['TimeExposure'][()].item()
+            try:
+                with h5py.File(os.path.join(directory, file), 'r') as h5f:
+                    # Get timestamp and seconds from file
+                    timestamp_str = h5f['Cube']['Timestamp'][()].decode('utf-8')
+                    file_date = datetime.strptime(timestamp_str, '%Y/%m/%d')
+                    
+                    # Determine which filter set to use based on date and seconds
+                    if file_date < cutoff_datetime_1:
+                        emission_filters = early_emission_filters
+                    elif file_date < cutoff_datetime_2:
+                        emission_filters = middle_emission_filters
+                    elif file_date >= cutoff_datetime_2:
+                        emission_filters = latest_emission_filters
+                    
+                    # Extract filter key from filename
+                    parts = file.split('_')
+                    filter_key = next((part for part in parts if any(fk in part for fk in emission_filters.keys())), None)
+                    
+                    if filter_key is None:
+                        print(f"Could not find valid filter key in filename: {file}")
+                        continue
                         
-                        # Ensure image is 2D
-                        if image.ndim == 3 and image.shape[0] == 1:
-                            image = image.squeeze(0)
-                        
-                        image_data.append(image)
-                        exposure_times.append(exposure_time)
-                except Exception as e:
-                    print(f"Error processing file {file}: {str(e)}")
-                    continue
-            
-            # Skip if no valid data was collected
-            if not image_data:
-                print(f"No valid data collected for combination: {key}")
+                    filter_key = next(fk for fk in emission_filters.keys() if fk in filter_key)
+                    filter_value = emission_filters[filter_key]
+                    
+                    key = f"{experiment_title}_{laser_value}_{filter_value}"
+                    
+                    # Rest of the processing remains the same as before
+                    image_files = [f for f in os.listdir(directory) 
+                                 if f.startswith(f"{experiment_title}_{laser_key}_{filter_key}")]
+                    
+                    if not image_files:
+                        print(f"No files found for combination: {key}")
+                        continue
+                    
+                    image_files.sort(key=lambda x: float(x.split('_')[-1][:-3]))
+                    image_data = []
+                    exposure_times = []
+                    
+                    for img_file in image_files:
+                        file_path = os.path.join(directory, img_file)
+                        try:
+                            with h5py.File(file_path, 'r') as img_h5f:
+                                image = img_h5f['Cube']['Images'][()]
+                                exposure_time = img_h5f['Cube']['TimeExposure'][()].item()
+                                
+                                if image.ndim == 3 and image.shape[0] == 1:
+                                    image = image.squeeze(0)
+                                
+                                image_data.append(image)
+                                exposure_times.append(exposure_time)
+                        except Exception as e:
+                            print(f"Error processing file {img_file}: {str(e)}")
+                            continue
+                    
+                    if not image_data:
+                        print(f"No valid data collected for combination: {key}")
+                        continue
+                    
+                    image_array = np.array(image_data)
+                    exposure_times = np.array(exposure_times)
+                    
+                    print(f"Processing {key} - Shape: {image_array.shape}, Exposure times: {exposure_times}")
+                    print(f"Used filter set based on date {timestamp_str} and seconds {seconds}")
+                    
+                    structured_data = np.zeros(len(exposure_times),
+                                            dtype=[('exposure_time', float),
+                                                  ('image', float, (640, 512))])
+                    structured_data['exposure_time'] = exposure_times
+                    for i, image in enumerate(image_array):
+                        structured_data['image'][i] = np.squeeze(image_array[i])
+                    
+                    print(f"Final shape of image array for {key}: {structured_data.shape}, "
+                          f"dtype: {structured_data.dtype}")
+                    np.save(os.path.join(data_folder, f"{key}_raw.npy"), structured_data)
+                    
+            except Exception as e:
+                print(f"Error processing file {file}: {str(e)}")
                 continue
-                
-            # Convert lists to numpy arrays
-            image_array = np.array(image_data)
-            exposure_times = np.array(exposure_times)
-            
-            print(f"Processing {key} - Shape: {image_array.shape}, Exposure times: {exposure_times}")
-            
-            # Create a structured array with exposure times as the first dimension
-            structured_data = np.zeros(len(exposure_times), dtype=[('exposure_time', float), ('image', float, (640, 512))])
-            structured_data['exposure_time'] = exposure_times
-            for i, image in enumerate(image_array):
-                structured_data['image'][i] = np.squeeze(image_array[i])
-                
-            print(f"Final shape of image array for {key}: {structured_data.shape}, dtype: {structured_data.dtype}")
-            np.save(os.path.join(data_folder, f"{key}_raw.npy"), structured_data)
     
     print(f"Raw data saved in: {data_folder}")
     return data_folder
@@ -251,10 +295,12 @@ def calculate_Slinear_adjusted(directory, experiment_title, Sd, b, Slinear, base
     np.save(os.path.join(clipped_denoised_data_folder, f"{experiment_title}_Slinear_adjusted.npy"), Slinear_adjusted)
     print(f"Slinear_adjusted saved in: {clipped_denoised_data_folder}")
 
-def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_data_folder):
-    experiment_folder = os.path.basename(os.path.normpath(directory))
+def generate_import_report(directory, experiment_title, params, base_data_folder, operations):
+    """Generate report based on specified processing operations."""
+    #experiment_folder = os.path.basename(os.path.normpath(directory))
     raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
-    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    op_names = '_'.join(operations) if operations else 'raw'
+    processed_folder = os.path.join(directory, base_data_folder, "processed_data")
     report_folder = os.path.join(directory, base_data_folder, "reports")
     os.makedirs(report_folder, exist_ok=True)
 
@@ -267,30 +313,39 @@ def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_dat
 
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, height - 50, f"Import Report: {experiment_title}")
-    
     c.setFont("Helvetica", 12)
     c.drawString(50, height - 70, f"Generated on: {timestamp}")
+    c.drawString(50, height - 90, f"Operations performed: {op_names}")
     
-    y_position = height - 100
+    y_position = height - 120
 
-    # Table data
-    table_data = [['Image Set', 'Exposure Time (s)', 'Raw Min', 'Raw Max', 'Clipped Denoised Min', 'Clipped Denoised Max']]
+    # Dynamic table headers
+    headers = ['Image Set', 'Exposure Time (s)', 'Raw Min', 'Raw Max']
+    if operations:
+        headers.extend([f'{op_names} Min', f'{op_names} Max'])
+    table_data = [headers]
 
     for file in os.listdir(raw_data_folder):
         if file.endswith("_raw.npy"):
-            key = file[:-8]  # Remove '_raw.npy'
+            key = file[:-8]
             raw_data = np.load(os.path.join(raw_data_folder, file))
-            clipped_denoised_data = np.load(os.path.join(final_data_folder, f"{key}_clipped_denoised.npy"))
+            
+            if operations:
+                processed_data = np.load(os.path.join(processed_folder, f"{key}_{op_names}.npy"))
 
             for i in range(len(raw_data)):
-                table_data.append([
+                row = [
                     key,
                     f"{raw_data['exposure_time'][i]:.4g}",
                     f"{np.min(raw_data['image'][i]):.4g}",
-                    f"{np.max(raw_data['image'][i]):.4g}",
-                    f"{np.min(clipped_denoised_data['image'][i]):.4g}",
-                    f"{np.max(clipped_denoised_data['image'][i]):.4g}"
-                ])
+                    f"{np.max(raw_data['image'][i]):.4g}"
+                ]
+                if operations:
+                    row.extend([
+                        f"{np.min(processed_data['image'][i]):.4g}",
+                        f"{np.max(processed_data['image'][i]):.4g}"
+                    ])
+                table_data.append(row)
 
     table = Table(table_data)
     table.setStyle(TableStyle([
@@ -302,40 +357,36 @@ def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_dat
         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
         ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
         ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
         ('FONTSIZE', (0, 1), (-1, -1), 10),
-        ('TOPPADDING', (0, 1), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
         ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
 
     table.wrapOn(c, width - 100, height)
     table.drawOn(c, 50, y_position - table._height)
-
     y_position -= (table._height + 50)
 
-    # Find the middle exposure time
+    # Processing parameters section
     exposure_times = raw_data['exposure_time']
     middle_index = len(exposure_times) // 2
     middle_time = exposure_times[middle_index]
 
-    # Calculate dark current for the middle exposure time
-    dc_middle = Sd * middle_time + b
+    if 'denoise' in operations:
+        Sd, b = params['Sd'], params['b']
+        dc_middle = Sd * middle_time + b
+        c.drawString(50, y_position, f"Dark current for middle exposure time ({middle_time:.2f}s):")
+        y_position -= 20
+        c.drawString(70, y_position, f"[{np.min(dc_middle):.2f}, {np.max(dc_middle):.2f}]")
+        y_position -= 40
 
-    c.drawString(50, y_position, f"Dark current for middle exposure time ({middle_time:.2f}s):")
-    y_position -= 20
-    c.drawString(70, y_position, f"[{np.min(dc_middle):.2f}, {np.max(dc_middle):.2f}]")
-    y_position -= 40
-
-
-
-    # Add images
+    # Image visualization
     for file in os.listdir(raw_data_folder):
         if file.endswith("_raw.npy"):
-            key = file[:-8]  # Remove '_raw.npy'
+            key = file[:-8]
             raw_data = np.load(os.path.join(raw_data_folder, file))
-            clipped_denoised_data = np.load(os.path.join(final_data_folder, f"{key}_clipped_denoised.npy"))
+            
+            if operations:
+                processed_data = np.load(os.path.join(processed_folder, f"{key}_{op_names}.npy"))
 
             if y_position - 300 < 50:
                 c.showPage()
@@ -345,16 +396,15 @@ def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_dat
             c.drawString(50, y_position, f"Image set: {key}")
             y_position -= 20
 
-            # Plot raw image (middle exposure time)
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
             im1 = ax1.imshow(raw_data['image'][middle_index], cmap='gray')
             ax1.set_title(f"Raw Image (t={middle_time:.2f}s)")
             plt.colorbar(im1, ax=ax1)
 
-            # Plot clipped and denoised image (middle exposure time)
-            im2 = ax2.imshow(clipped_denoised_data['image'][middle_index], cmap='gray')
-            ax2.set_title(f"Clipped and Denoised Image (t={middle_time:.2f}s)")
-            plt.colorbar(im2, ax=ax2)
+            if operations:
+                im2 = ax2.imshow(processed_data['image'][middle_index], cmap='gray')
+                ax2.set_title(f"Processed Image (t={middle_time:.2f}s)")
+                plt.colorbar(im2, ax=ax2)
 
             plt.tight_layout()
             
@@ -369,28 +419,28 @@ def generate_import_report(directory, experiment_title, Sd, b, Slinear, base_dat
             y_position -= (img_height + 50)
             plt.close(fig)
 
+    # Processing parameters summary
+    if operations:
+        if 'clip' in operations:
+            Slinear = params['Slinear']
+            c.drawString(50, y_position, f"Upper clip range: [{np.min(Slinear):.2f}, {np.max(Slinear):.2f}]")
+            y_position -= 20
 
-    c.drawString(50, y_position, "Data clipping and denoising information:")
-    y_position -= 20
-    c.drawString(50, y_position, f"Upper clip range: [{np.min(Slinear):.2f}, {np.max(Slinear):.2f}]")
-    y_position -= 20
-    
-    # Calculate dark current ranges for the first and last exposure time as examples
-    first_time = raw_data['exposure_time'][0]  # Get the first exposure time
-    last_time = raw_data['exposure_time'][-1]  # Get the last exposure time
-    
-    dc_first = Sd * first_time + b
-    dc_last = Sd * last_time + b
-    
-    c.drawString(50, y_position, f"Dark current range for {first_time:.2f}s exposure:")
-    y_position -= 20
-    c.drawString(70, y_position, f"[{np.min(dc_first):.2f}, {np.max(dc_first):.2f}]")
-    y_position -= 20
-    
-    c.drawString(50, y_position, f"Dark current range for {last_time:.2f}s exposure:")
-    y_position -= 20
-    c.drawString(70, y_position, f"[{np.min(dc_last):.2f}, {np.max(dc_last):.2f}]")
+        if 'denoise' in operations:
+            first_time = exposure_times[0]
+            last_time = exposure_times[-1]
+            
+            dc_first = Sd * first_time + b
+            dc_last = Sd * last_time + b
+            
+            c.drawString(50, y_position, f"Dark current range for {first_time:.2f}s exposure:")
+            y_position -= 20
+            c.drawString(70, y_position, f"[{np.min(dc_first):.2f}, {np.max(dc_first):.2f}]")
+            y_position -= 20
+            
+            c.drawString(50, y_position, f"Dark current range for {last_time:.2f}s exposure:")
+            y_position -= 20
+            c.drawString(70, y_position, f"[{np.min(dc_last):.2f}, {np.max(dc_last):.2f}]")
 
     c.save()
     print(f"Import report saved: {filepath}")
-

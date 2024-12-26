@@ -2,7 +2,6 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
-import cv2
 import io
 import logging
 from datetime import datetime
@@ -58,7 +57,7 @@ def precompute_zmax(Slinear, Sd, bias, exposure_times):
     
     # Compute Zmax for all pixels and exposure times
     Zmax = Slinear - (Sd * exposure_times + bias)
-    
+
     return Zmax
 
 def debevec_weight(z, Zmax):
@@ -68,6 +67,7 @@ def debevec_weight(z, Zmax):
      Zmin = 0  # Assuming the minimum possible pixel value is 0
     
      # Ensure z and Zmax are scalars or have the same shape
+     
      if np.isscalar(z) and np.isscalar(Zmax):
          middle = (Zmax + Zmin) / 2
          if z <= middle:
@@ -178,7 +178,7 @@ def square_weight(z, Zmax):
 
 """ def load_clipped_denoised_data(directory, experiment_title, base_data_folder, extract=False):
     """
-    """
+"""
     Load clipped and denoised data from the final_data folder.
     
     Args:
@@ -190,7 +190,7 @@ def square_weight(z, Zmax):
     Returns:
     dict: A dictionary containing the loaded data for each laser-filter combination.
     """
-    """
+"""
     #experiment_folder = os.path.basename(os.path.normpath(directory))
     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
     
@@ -256,24 +256,24 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
         return radiance_map
  """
 
-def load_data(directory, experiment_title, base_data_folder):
+def load_data(directory, base_data_folder):
     """Load data based on filename tags."""
-    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    final_data_folder = os.path.join(directory, base_data_folder, "processed_data")
     data_dict = {}
     
     for file in os.listdir(final_data_folder):
         if file.endswith(".npy"):
-            is_clipped = "_clipped" in file
-            is_denoised = "_denoised" in file
+            is_clipped = "_clip" in file
+            is_denoised = "_denoise" in file
             
             if not (is_clipped or is_denoised):
                 continue
                 
-            key = file.split("_clipped")[0] if is_clipped else file.split("_denoised")[0]
+            key = file.split("_clip")[0] if is_clipped else file.split("_denoised")[0]
             file_path = os.path.join(final_data_folder, file)
             data_type = []
-            if is_clipped: data_type.append("clipped")
-            if is_denoised: data_type.append("denoised")
+            if is_clipped: data_type.append("clip")
+            if is_denoised: data_type.append("denoise")
             
             data_dict[key] = {
                 'data': np.load(file_path),
@@ -283,13 +283,13 @@ def load_data(directory, experiment_title, base_data_folder):
     return data_dict
 
 def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, 
-                      return_all=False, crf=None, weighting_function=debevec_weight):
+                      return_all=False, crf=None, weighting_function=debevec_weight, key = None):
     intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
     
     if crf is None:
         response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, 
                                             smoothing_lambda, weighting_function, z_min, z_max, 
-                                            Zmax_precomputed)
+                                            Zmax_precomputed, key = key)
     else:
         response_curve = crf
         
@@ -314,8 +314,10 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
 
 
 def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, 
-                        weighting_function, z_min, z_max, Zmax_precomputed):
+                        weighting_function, z_min, z_max, Zmax_precomputed, key = None):
     num_samples, num_images = intensity_samples.shape
+    print(num_images, num_samples)
+    
     intensity_range = int(np.max(Zmax_precomputed)) - z_min + 1
     z_mid = int((z_min + z_max) // 2)
 
@@ -328,8 +330,10 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
     k = 0
     for i in range(num_samples):
         for j in range(num_images):
+            current_zmax = np.median(Zmax_precomputed[j])
             z_ij = intensity_samples[i, j]
-            w_ij = weighting_function(z_ij, Zmax_precomputed[j])
+            w_ij = weighting_function(z_ij, current_zmax)
+
             
             z_ij_scalar = int(z_ij)
             w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
@@ -359,14 +363,18 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
     x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
     response_curve = x.flatten()
 
-    filter_info = os.path.basename(os.getcwd()).split('_')[0]
+    filter_info = key
     weight_name = weighting_function.__name__
+    currentdate = datetime.now().strftime("%Y%m%d")
+    #save CRF to output folder
     np.save(f"{filter_info}_crf_{weight_name}.npy", response_curve)
+    np.save(f"{filter_info}_crf_{weight_name}.npy", response_curve)
+    print(f"Saved {filter_info}_crf_{weight_name}.npy")
 
     return response_curve
 
 
-def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, 
+def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve = None,
                       smoothing_lambda=1000, weighting_function=debevec_weight, num_sets=None):
 
     """
@@ -427,9 +435,11 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
 
     """
 
-
-    data_dict = load_data(directory, experiment_title, base_data_folder)
+    os.chdir(os.path.join(directory, base_data_folder))
+    data_dict = load_data(directory, base_data_folder)
     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
+    
+    os.makedirs(final_data_folder, exist_ok=True)
     
     Slinear = coefficients_dict['Smax']
     Sd = coefficients_dict['Sd']
@@ -443,18 +453,20 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
     for key, item in data_dict.items():
         data = item['data']
         data_type = item['type']
-        
+        #key 
+
         images = data['image']
         exposure_times = data['exposure_time']
         
         Zmax_precomputed = precompute_zmax(Slinear, Sd, bias, exposure_times)
         
         radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
-            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda,
-            return_all=True, weighting_function=weighting_function
+            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, crf=response_curve,
+            return_all=True, weighting_function=weighting_function, key = key
         )
         
         radiance_map_filename = f"{key}_radiance_map_{data_type}_{weighting_function.__name__}.npy"
+        
         np.save(os.path.join(final_data_folder, radiance_map_filename), radiance_map)
         
         processed_data.append({
@@ -538,137 +550,6 @@ def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=5000
 
     return intensity_samples, log_exposures, z_min, z_max
 
-"""
-def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, weighting_function, z_min, z_max, Zmax_precomputed):
-"""
-"""
-    Compute the response curve from the sampled pixel intensities.
-    Uses a weighted least squares optimization with a smoothness and monotonicity constraint.
-    """
-"""
-    num_samples, num_images = intensity_samples.shape
-    intensity_range = int(np.max(Zmax_precomputed)) - z_min + 1
-    z_mid = int((z_min + z_max) // 2)
-
-    data_constraints = num_samples * num_images
-    smoothness_constraints = intensity_range - 2
-    monotonicity_constraints = intensity_range - 1
-    z_mid_constraint = 1
-    total_constraints = data_constraints + smoothness_constraints + monotonicity_constraints + z_mid_constraint
-
-    mat_A = np.zeros((total_constraints, intensity_range), dtype=np.float64)
-    mat_b = np.zeros((total_constraints, 1), dtype=np.float64)
-
-    k = 0
-    for i in range(num_samples):
-        for j in range(num_images):
-            z_ij = intensity_samples[i, j]
-            # Use the correct Zmax for this specific sample and exposure
-            w_ij = weighting_function(z_ij, Zmax_precomputed[j])
-            
-            z_ij_scalar = int(z_ij)
-            # Use the mean weight if w_ij is an array
-            w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
-            
-            mat_A[k, z_ij_scalar - z_min] = w_ij_scalar
-            mat_b[k, 0] = w_ij_scalar * log_exposures[i, j]
-            k += 1
-
-    for z_k in range(z_min + 1, int(np.max(Zmax_precomputed))):
-        w_k = weighting_function(z_k, np.max(Zmax_precomputed[-1]))
-        w_k_scalar = np.mean(w_k) if isinstance(w_k, np.ndarray) else float(w_k)
-        mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
-        k += 1
-
-    for z_k in range(z_min, int(np.max(Zmax_precomputed)) - 1):
-        if k < total_constraints - 1:
-            mat_A[k, z_k - z_min] = -1
-            mat_A[k, z_k - z_min + 1] = 1
-            mat_b[k, 0] = 0.001
-            k += 1
-        else:
-            break
-
-    # Add the constraint: g(Z_mid) = 0
-    mat_A[k, z_mid - z_min] = 1
-    mat_b[k, 0] = 0
-
-    x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
-    response_curve = x.flatten()
-
-    return response_curve
-
-def process_hdr_images(directory, experiment_title, base_data_folder, smoothing_lambda=1000, num_sets=None):
-    """
-"""
-    Process the HDR images and compute the radiance map.
-    
-    Args:
-        directory (str): The directory containing the data.
-        experiment_title (str): The title of the experiment.
-        base_data_folder (str): The base folder for the data output.
-        smoothing_lambda (float, optional): The smoothing parameter for the response curve. Defaults to 1000.
-        num_sets (int, optional): The number of sets of data to process. Defaults to None.
-    
-    """
-"""
-    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
-    
-    # Load clipped and denoised data
-    data_dict = load_clipped_denoised_data(directory, experiment_title, base_data_folder)
-    os.chdir(final_data_folder)
-    coefficient_folder = base_data_folder
-
-    # Load Slinear, Sd, and bias arrays
-    Slinear = np.load(os.path.join(coefficient_folder, 'Smax.npy'))
-    Sd = np.load(os.path.join(coefficient_folder, 'Sd.npy'))
-    bias = np.load(os.path.join(coefficient_folder, 'b.npy'))
-    
-    processed_data = []
-    
-    # Limit the number of sets to process if specified
-    if num_sets is not None:
-        data_dict = dict(list(data_dict.items())[:num_sets])
-    
-    for key, data in data_dict.items():
-        images = data['image']
-        exposure_times = data['exposure_time']
-        
-        print(f"Processing {key}")
-        print(f"Images shape: {images.shape}")
-        print(f"Exposure times shape: {exposure_times.shape}")
-        print(f"Slinear shape: {Slinear.shape}")
-        print(f"Sd shape: {Sd.shape}")
-        print(f"bias shape: {bias.shape}")
-        
-        # Use return_all=True to get all the computed data
-        Zmax_precomputed = precompute_zmax(Slinear, Sd, bias, exposure_times)
-        print(f"Zmax_precomputed shape: {Zmax_precomputed.shape}")
-        
-        radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
-            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, return_all=True
-        )
-        
-        radiance_map_filename = f"{key}_radiance_map.npy"
-        np.save(os.path.join(final_data_folder, radiance_map_filename), radiance_map)
-        logger.info(f"Radiance map saved to: {os.path.join(final_data_folder, radiance_map_filename)}")
-        
-        processed_data.append({
-            'key': key,
-            'radiance_map': radiance_map,
-            'response_curve': response_curve,
-            'z_min': z_min,
-            'z_max': z_max,
-            'intensity_samples': intensity_samples,
-            'log_exposures': log_exposures
-        })
-        
-        logger.info(f"Processed {key}")
-
-    logger.info("Finished processing all files.")
-    return processed_data
-
-    """
 
 def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder):
     """Save the unscaled radiance map."""
