@@ -13,8 +13,411 @@ from scipy.optimize import curve_fit
 from scipy import stats
 from datetime import datetime
 
+## Below is code for determining saturation by linear range (Slinear) and asymptote (Smax) using reflectance measurements
 
 
+# Data Import Functions
+def import_reflectance_data(directory, file_pattern=None):
+    """
+    Import reflectance measurement data from H5 files in the specified directory.
+    """
+    if file_pattern:
+        reflectance_files = [f for f in os.listdir(directory) 
+                            if f.startswith(file_pattern) and f.endswith('.h5')]
+    else:
+        reflectance_files = [f for f in os.listdir(directory) if f.endswith('.h5')]
+    
+    if not reflectance_files:
+        raise ValueError(f"No H5 files found in {directory}" + 
+                       (f" matching pattern '{file_pattern}'" if file_pattern else ""))
+    
+    try:
+        reflectance_files.sort(key=lambda x: float(x.split('_')[-1][:-3]))
+    except (IndexError, ValueError) as e:
+        print("Warning: Could not sort files by exposure time from filenames.")
+        print("Files will be processed in filesystem order.")
+    
+    reflectance_data = []
+    exposure_times = []
+    first_shape = None
+    
+    for file in reflectance_files:
+        file_path = os.path.join(directory, file)
+        try:
+            with h5py.File(file_path, 'r') as h5f:
+                if 'Cube' in h5f and 'Images' in h5f['Cube']:
+                    reflectance = h5f['Cube']['Images'][()]
+                else:
+                    raise ValueError(f"Required dataset 'Cube/Images' not found in {file}")
+                
+                if 'TimeExposure' in h5f['Cube']:
+                    exposure_time = h5f['Cube']['TimeExposure'][()].item()
+                else:
+                    raise ValueError(f"Required dataset 'Cube/TimeExposure' not found in {file}")
+                
+                if first_shape is None:
+                    first_shape = reflectance.shape
+                elif reflectance.shape != first_shape:
+                    raise ValueError(f"Inconsistent dimensions in {file}. " +
+                                  f"Expected {first_shape}, got {reflectance.shape}")
+                
+                reflectance_data.append(reflectance)
+                exposure_times.append(exposure_time)
+                
+        except Exception as e:
+            print(f"Error processing {file}: {str(e)}")
+            raise
+    
+    reflectance_array = np.array(reflectance_data)
+    exposure_times = np.array(exposure_times)
+    reflectance_array = reflectance_array.squeeze()
+    
+    print(f"Loaded {len(reflectance_files)} files")
+    print(f"Shape of reflectance_array: {reflectance_array.shape}")
+    print(f"Shape of exposure_times: {exposure_times.shape}")
+    print(f"Exposure time range: {exposure_times.min():.2e} to {exposure_times.max():.2e} seconds")
+    
+    return reflectance_array, exposure_times
+
+# Curve Fitting Functions
+def linear_to_asymptote(t, slope, intercept, Smax, smoothness):
+    """
+    S-curve function that's linear before transitioning to asymptote.
+    """
+    linear_term = slope * t + intercept
+    exp_term = np.exp(-smoothness * (linear_term - Smax))
+    exp_term = np.clip(exp_term, -1e15, 1e15)  # Prevent overflow
+    return Smax - (1/smoothness) * np.log1p(exp_term)
+
+def sigmoid_curve(t, a, b, c, d):
+    """
+    Generalized sigmoidal function for log-linear fitting.
+    
+    Args:
+        t: exposure times
+        a: amplitude parameter
+        b: center point (in log space)
+        c: steepness parameter
+        d: vertical offset
+    
+    Returns:
+        Sigmoidal curve values
+    """
+    return a / (1 + np.exp(-c * (np.log10(t) - b))) + d
+
+def log_linear_range_sigmoid(exposure_times, pixel_data, popt, threshold=0.01):
+    """
+    Find the linear range in log space using the sigmoid fit.
+    
+    Args:
+        exposure_times: array of exposure times
+        pixel_data: array of pixel values
+        popt: fitted sigmoid parameters [a, b, c, d]
+        threshold: relative deviation threshold
+    
+    Returns:
+        tuple: (linear_start, linear_end) exposure times
+    """
+    # Calculate local derivatives of the sigmoid in log space
+    log_times = np.log10(exposure_times)
+    deriv = popt[0] * popt[2] * np.exp(-popt[2] * (log_times - popt[1])) / \
+            (1 + np.exp(-popt[2] * (log_times - popt[1])))**2
+    
+    # Find where derivative deviates significantly from its maximum
+    max_deriv = np.max(deriv)
+    linear_region = deriv >= max_deriv * (1 - threshold)
+    
+    if np.any(linear_region):
+        linear_indices = np.where(linear_region)[0]
+        return exposure_times[linear_indices[0]], exposure_times[linear_indices[-1]]
+    else:
+        return exposure_times[0], exposure_times[-1]
+
+def is_approximately_monotonic(y, tolerance=0.01):
+    """
+    Check if the sequence is approximately monotonic.
+    """
+    diff = np.diff(y)
+    negative_diffs = diff[diff < 0]
+    if len(negative_diffs) == 0:
+        return True
+    
+    max_allowed_negative = tolerance * np.max(y)
+    return np.all(np.abs(negative_diffs) <= max_allowed_negative)
+
+def find_monotonic_range(y, tolerance=0.01):
+    """
+    Find the largest approximately monotonic range from the beginning of the sequence.
+    """
+    for i in range(len(y), 0, -1):
+        if is_approximately_monotonic(y[:i], tolerance):
+            return i
+    return 1
+
+def find_log_linear_range(exposure_times, pixel_data, threshold=0.01):
+    """
+    Find the linear range in log space.
+    """
+    log_times = np.log10(exposure_times)
+    log_data = np.log10(pixel_data)
+    
+    window_size = min(5, len(log_times) // 2)
+    slopes = []
+    for i in range(len(log_times) - window_size + 1):
+        x = log_times[i:i+window_size]
+        y = log_data[i:i+window_size]
+        slope, _ = np.polyfit(x, y, 1)
+        slopes.append(slope)
+    
+    slopes = np.array(slopes)
+    mean_slope = np.median(slopes)
+    deviations = np.abs(slopes - mean_slope) / mean_slope
+    nonlinear_points = np.where(deviations > threshold)[0]
+    
+    if len(nonlinear_points) > 0:
+        end_idx = nonlinear_points[0] + window_size//2
+    else:
+        end_idx = len(exposure_times)
+    
+    return 0, min(end_idx, len(exposure_times))
+
+# Main Analysis Function
+def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_method='linear'):
+    """
+    Analyze light response data to find per-pixel Slinear and Smax values.
+    """
+    if fit_method not in ['linear', 'log_linear']:
+        raise ValueError("fit_method must be either 'linear' or 'log_linear'")
+    
+    height, width = light_array.shape[1:]
+    Slinear = np.zeros((height, width))
+    Smax = np.zeros((height, width))
+    
+    fit_params = {
+        'slope': np.zeros((height, width), dtype=np.float64),
+        'intercept': np.zeros((height, width), dtype=np.float64),
+        'smoothness': np.zeros((height, width), dtype=np.float64)
+    }
+    
+    fit_quality = {
+        'r_squared': np.zeros((height, width)),
+        'fit_error': np.zeros((height, width), dtype=bool),
+        'is_monotonic': np.zeros((height, width), dtype=bool)
+    }
+    
+    for i in range(height):
+        for j in range(width):
+            pixel_data = light_array[:, i, j]
+            
+            if not is_approximately_monotonic(pixel_data, tolerance=0.05):
+                fit_quality['fit_error'][i, j] = True
+                continue
+                
+            fit_quality['is_monotonic'][i, j] = True
+            
+            try:
+                if fit_method == 'log_linear':
+                    # Initial parameter guesses for sigmoid
+                    max_val = np.max(pixel_data)
+                    min_val = np.min(pixel_data)
+                    range_val = max_val - min_val
+                    
+                    # Convert to log space for initial fit
+                    log_times = np.log10(exposure_times)
+                    median_time = np.median(log_times)
+                    
+                    p0 = [
+                        range_val,        # amplitude
+                        median_time,      # center point in log space
+                        1.0,             # steepness
+                        min_val          # offset
+                    ]
+                    
+                    bounds = (
+                        [0, np.min(log_times), 0, 0],                  # lower bounds
+                        [np.inf, np.max(log_times), np.inf, np.inf]    # upper bounds
+                    )
+                    
+                    try:
+                        popt, _ = curve_fit(
+                            sigmoid_curve,
+                            exposure_times,
+                            pixel_data,
+                            p0=p0,
+                            bounds=bounds,
+                            method='trf',
+                            maxfev=10000
+                        )
+                        
+                        # Calculate Slinear and Smax
+                        linear_start, linear_end = log_linear_range_sigmoid(
+                            exposure_times, pixel_data, popt, threshold)
+                        
+                        # Store parameters differently for sigmoid fit
+                        fit_params['slope'][i, j] = popt[0]  # amplitude
+                        fit_params['intercept'][i, j] = popt[1]  # center
+                        fit_params['smoothness'][i, j] = popt[2]  # steepness
+                        
+                        # Smax is the upper asymptote of sigmoid
+                        Smax[i, j] = popt[0] + popt[3]
+                        
+                        # Slinear is the value at the end of the linear range
+                        Slinear[i, j] = sigmoid_curve(linear_end, *popt)
+                        
+                    except Exception as e:
+                        print(f"Sigmoid fitting failed for pixel ({i}, {j}): {str(e)}")
+                        fit_quality['fit_error'][i, j] = True
+                        Slinear[i, j] = np.max(pixel_data)
+                        Smax[i, j] = np.max(pixel_data) * 1.2
+                        continue
+                else:
+                    # Linear fitting
+                    initial_slope = (pixel_data[5] - pixel_data[0]) / (exposure_times[5] - exposure_times[0])
+                    p0 = [initial_slope, pixel_data[0], np.max(pixel_data) * 1.2, 0.1]
+                    bounds = ([0, 0, np.max(pixel_data), 0], [np.inf, np.inf, np.inf, 10])
+                    
+                    popt, _ = curve_fit(
+                        linear_to_asymptote,
+                        exposure_times,
+                        pixel_data,
+                        p0=p0,
+                        bounds=bounds,
+                        method='trf',
+                        maxfev=10000
+                    )
+                
+                # Store parameters
+                fit_params['slope'][i, j] = popt[0]
+                fit_params['intercept'][i, j] = popt[1]
+                Smax[i, j] = popt[2]
+                fit_params['smoothness'][i, j] = popt[3]
+                
+                # Calculate Slinear
+                if fit_method == 'log_linear':
+                    log_linear_response = 10**(popt[0] * np.log10(exposure_times) + popt[1])
+                    actual_response = log_linear_to_asymptote(exposure_times, *popt)
+                else:
+                    linear_response = popt[0] * exposure_times + popt[1]
+                    actual_response = linear_to_asymptote(exposure_times, *popt)
+                
+                relative_deviation = np.abs(
+                    actual_response - (log_linear_response if fit_method == 'log_linear' else linear_response)
+                ) / (log_linear_response if fit_method == 'log_linear' else linear_response)
+                
+                nonlinear_points = np.where(relative_deviation > threshold)[0]
+                if len(nonlinear_points) > 0:
+                    Slinear[i, j] = actual_response[nonlinear_points[0]]
+                else:
+                    Slinear[i, j] = Smax[i, j]
+                
+                # Calculate R-squared
+                y_pred = (log_linear_to_asymptote(exposure_times, *popt) if fit_method == 'log_linear' 
+                         else linear_to_asymptote(exposure_times, *popt))
+                ss_res = np.sum((pixel_data - y_pred) ** 2)
+                ss_tot = np.sum((pixel_data - np.mean(pixel_data)) ** 2)
+                fit_quality['r_squared'][i, j] = 1 - (ss_res / ss_tot)
+                
+            except Exception as e:
+                print(f"Fitting failed for pixel ({i}, {j}): {str(e)}")
+                fit_quality['fit_error'][i, j] = True
+                Slinear[i, j] = np.max(pixel_data)
+                Smax[i, j] = np.max(pixel_data) * 1.2
+    
+    return Slinear, Smax, fit_params, fit_quality
+
+# Visualization Functions
+def select_random_pixels(height, width, n_pixels, seed=None):
+    """
+    Select random pixel coordinates.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    
+    i_coords = np.random.randint(0, height, n_pixels, dtype=np.int32)
+    j_coords = np.random.randint(0, width, n_pixels, dtype=np.int32)
+    return [(int(i), int(j)) for i, j in zip(i_coords, j_coords)]
+
+def plot_pixel_responses(light_array, exposure_times, pixel_coords, 
+                        Slinear, Smax, fit_params, fit_method='linear', random_pixels=None):
+    """
+    Plot light response curves for selected pixels.
+    """
+    if random_pixels is not None:
+        height, width = light_array.shape[1:]
+        pixel_coords = select_random_pixels(height, width, random_pixels)
+    
+    if not pixel_coords:
+        raise ValueError("No pixel coordinates provided or selected")
+    
+    n_pixels = len(pixel_coords)
+    fig, axes = plt.subplots(n_pixels, 2, figsize=(15, 5*n_pixels))
+    
+    if n_pixels == 1:
+        axes = axes.reshape(1, -1)
+    
+    x_fine = np.logspace(np.log10(min(exposure_times)), np.log10(max(exposure_times)), 1000)
+    
+    for idx, (i, j) in enumerate(pixel_coords):
+        i, j = int(i), int(j)
+        pixel_data = light_array[:, i, j]
+        
+        try:
+            if fit_method == 'log_linear':
+                # Parameters for sigmoid fit
+                amplitude = float(fit_params['slope'][i, j])
+                center = float(fit_params['intercept'][i, j])
+                steepness = float(fit_params['smoothness'][i, j])
+                offset = float(Smax[i, j]) - amplitude
+                
+                popt = [amplitude, center, steepness, offset]
+                y_fine = sigmoid_curve(x_fine, *popt)
+                
+            else:
+                # Parameters for linear fit
+                slope = float(fit_params['slope'][i, j])
+                intercept = float(fit_params['intercept'][i, j])
+                smax_val = float(Smax[i, j])
+                smoothness = float(fit_params['smoothness'][i, j])
+                
+                popt = [slope, intercept, smax_val, smoothness]
+                y_fine = linear_to_asymptote(x_fine, *popt)
+                
+            # Linear scale plot
+            axes[idx, 0].scatter(exposure_times, pixel_data, label='Data')
+            axes[idx, 0].plot(x_fine, y_fine, 'r-', label='Fitted Curve')
+            axes[idx, 0].axhline(y=Slinear[i, j], color='b', linestyle=':', 
+                                label='Slinear')
+            axes[idx, 0].axhline(y=Smax[i, j], color='r', linestyle=':', 
+                                label='Smax')
+            axes[idx, 0].set_xlabel('Exposure Time (s)')
+            axes[idx, 0].set_ylabel('Pixel Value')
+            axes[idx, 0].set_title(f'Pixel ({i}, {j}) - Linear Scale')
+            axes[idx, 0].legend()
+            
+            # Log scale plot
+            axes[idx, 1].scatter(exposure_times, pixel_data, label='Data')
+            axes[idx, 1].plot(x_fine, y_fine, 'r-', label='Fitted Curve')
+            axes[idx, 1].axhline(y=Slinear[i, j], color='b', linestyle=':', 
+                                label='Slinear')
+            axes[idx, 1].axhline(y=Smax[i, j], color='r', linestyle=':', 
+                                label='Smax')
+            axes[idx, 1].set_xlabel('Exposure Time (s)')
+            axes[idx, 1].set_ylabel('Pixel Value')
+            axes[idx, 1].set_title(f'Pixel ({i}, {j}) - Log Scale')
+            axes[idx, 1].set_xscale('log')
+            axes[idx, 1].legend()
+        
+        except Exception as e:
+            print(f"Error plotting pixel ({i}, {j}): {str(e)}")
+            continue
+    
+    plt.tight_layout()
+    return fig
+            
+            # Linear scale plot
+            axes[idx, 0].scatter(exposure_times, pixel_data, label='Data')
+            axes[idx, 0].plot(x_fine, y_fine, 'r-', label='Fitted Curve')
+            axes[idx, 0].plot(x_fine, linear_response
 
 
 def import_darkcount_data(directory):

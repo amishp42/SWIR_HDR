@@ -122,8 +122,11 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
             try:
                 with h5py.File(os.path.join(directory, file), 'r') as h5f:
                     # Get timestamp and seconds from file
-                    timestamp_str = h5f['Cube']['Timestamp'][()].decode('utf-8')
-                    file_date = datetime.strptime(timestamp_str, '%Y/%m/%d')
+
+                    timestamp_bytes = h5f['Cube']['Timestamp'][()]
+                    timestamp_str = str(timestamp_bytes.item())
+                    timestamp_str = timestamp_str.strip("b'") 
+                    file_date = datetime.strptime(timestamp_str, '%Y/%m/%d %H:%M:%S.%f')
                     
                     # Determine which filter set to use based on date and seconds
                     if file_date < cutoff_datetime_1:
@@ -182,7 +185,7 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
                     exposure_times = np.array(exposure_times)
                     
                     print(f"Processing {key} - Shape: {image_array.shape}, Exposure times: {exposure_times}")
-                    print(f"Used filter set based on date {timestamp_str} and seconds {seconds}")
+                    print(f"Used filter set based on date {timestamp_str}")
                     
                     structured_data = np.zeros(len(exposure_times),
                                             dtype=[('exposure_time', float),
