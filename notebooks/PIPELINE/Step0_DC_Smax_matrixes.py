@@ -13,9 +13,6 @@ from scipy.optimize import curve_fit
 from scipy import stats
 from datetime import datetime
 
-## Below is code for determining saturation by linear range (Slinear) and asymptote (Smax) using reflectance measurements
-
-
 # Data Import Functions
 def import_reflectance_data(directory, file_pattern=None):
     """
@@ -105,33 +102,35 @@ def sigmoid_curve(t, a, b, c, d):
     """
     return a / (1 + np.exp(-c * (np.log10(t) - b))) + d
 
-def log_linear_range_sigmoid(exposure_times, pixel_data, popt, threshold=0.01):
+def sigmoid_curve(t, a, b, c, d):
     """
-    Find the linear range in log space using the sigmoid fit.
+    Generalized sigmoidal function for log-linear fitting.
     
     Args:
-        exposure_times: array of exposure times
-        pixel_data: array of pixel values
-        popt: fitted sigmoid parameters [a, b, c, d]
-        threshold: relative deviation threshold
+        t: exposure times
+        a: amplitude parameter
+        b: center point in log space
+        c: steepness parameter
+        d: vertical offset
     
     Returns:
-        tuple: (linear_start, linear_end) exposure times
+        Sigmoidal curve values
     """
-    # Calculate local derivatives of the sigmoid in log space
-    log_times = np.log10(exposure_times)
-    deriv = popt[0] * popt[2] * np.exp(-popt[2] * (log_times - popt[1])) / \
-            (1 + np.exp(-popt[2] * (log_times - popt[1])))**2
+    return a / (1 + np.exp((b - np.log10(t))/c)) + d
+
+def log_linear_range_sigmoid(b, c):
+    """
+    Calculate Slinear point for sigmoid fit based on parameters.
     
-    # Find where derivative deviates significantly from its maximum
-    max_deriv = np.max(deriv)
-    linear_region = deriv >= max_deriv * (1 - threshold)
+    Args:
+        b: center point in log space
+        c: steepness parameter
     
-    if np.any(linear_region):
-        linear_indices = np.where(linear_region)[0]
-        return exposure_times[linear_indices[0]], exposure_times[linear_indices[-1]]
-    else:
-        return exposure_times[0], exposure_times[-1]
+    Returns:
+        float: value representing Slinear point in log space
+    """
+    # Point where sigmoid reaches ~95% of its maximum value
+    return b + 1.317 * c
 
 def is_approximately_monotonic(y, tolerance=0.01):
     """
@@ -229,17 +228,18 @@ def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_meth
                     p0 = [
                         range_val,        # amplitude
                         median_time,      # center point in log space
-                        1.0,             # steepness
+                        0.5,             # steepness (smaller initial value)
                         min_val          # offset
                     ]
                     
+                    # Ensure bounds prevent negative offsets and unrealistic values
                     bounds = (
-                        [0, np.min(log_times), 0, 0],                  # lower bounds
-                        [np.inf, np.max(log_times), np.inf, np.inf]    # upper bounds
+                        [0.1*range_val, np.min(log_times), 0.1, min_val],     # lower bounds
+                        [2.0*range_val, np.max(log_times), 2.0, max_val]      # upper bounds
                     )
                     
                     try:
-                        popt, _ = curve_fit(
+                        popt, pcov = curve_fit(
                             sigmoid_curve,
                             exposure_times,
                             pixel_data,
@@ -249,11 +249,7 @@ def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_meth
                             maxfev=10000
                         )
                         
-                        # Calculate Slinear and Smax
-                        linear_start, linear_end = log_linear_range_sigmoid(
-                            exposure_times, pixel_data, popt, threshold)
-                        
-                        # Store parameters differently for sigmoid fit
+                        # Store parameters for sigmoid fit
                         fit_params['slope'][i, j] = popt[0]  # amplitude
                         fit_params['intercept'][i, j] = popt[1]  # center
                         fit_params['smoothness'][i, j] = popt[2]  # steepness
@@ -261,14 +257,13 @@ def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_meth
                         # Smax is the upper asymptote of sigmoid
                         Smax[i, j] = popt[0] + popt[3]
                         
-                        # Slinear is the value at the end of the linear range
-                        Slinear[i, j] = sigmoid_curve(linear_end, *popt)
+                        # Calculate Slinear using the new formula
+                        log_slinear = log_linear_range_sigmoid(popt[1], popt[2])
+                        Slinear[i, j] = sigmoid_curve(10**log_slinear, *popt)
                         
                     except Exception as e:
                         print(f"Sigmoid fitting failed for pixel ({i}, {j}): {str(e)}")
                         fit_quality['fit_error'][i, j] = True
-                        Slinear[i, j] = np.max(pixel_data)
-                        Smax[i, j] = np.max(pixel_data) * 1.2
                         continue
                 else:
                     # Linear fitting
@@ -289,13 +284,14 @@ def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_meth
                 # Store parameters
                 fit_params['slope'][i, j] = popt[0]
                 fit_params['intercept'][i, j] = popt[1]
-                Smax[i, j] = popt[2]
+                Smax[i, j] = popt[0] + popt[3]
+                print(Smax[i,j])
                 fit_params['smoothness'][i, j] = popt[3]
                 
                 # Calculate Slinear
                 if fit_method == 'log_linear':
                     log_linear_response = 10**(popt[0] * np.log10(exposure_times) + popt[1])
-                    actual_response = log_linear_to_asymptote(exposure_times, *popt)
+                    actual_response = sigmoid_curve(exposure_times, *popt)
                 else:
                     linear_response = popt[0] * exposure_times + popt[1]
                     actual_response = linear_to_asymptote(exposure_times, *popt)
@@ -311,8 +307,8 @@ def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_meth
                     Slinear[i, j] = Smax[i, j]
                 
                 # Calculate R-squared
-                y_pred = (log_linear_to_asymptote(exposure_times, *popt) if fit_method == 'log_linear' 
-                         else linear_to_asymptote(exposure_times, *popt))
+                y_pred = sigmoid_curve(exposure_times, *popt) if fit_method == 'log_linear' else \
+                        linear_to_asymptote(exposure_times, *popt)
                 ss_res = np.sum((pixel_data - y_pred) ** 2)
                 ss_tot = np.sum((pixel_data - np.mean(pixel_data)) ** 2)
                 fit_quality['r_squared'][i, j] = 1 - (ss_res / ss_tot)
@@ -413,11 +409,6 @@ def plot_pixel_responses(light_array, exposure_times, pixel_coords,
     
     plt.tight_layout()
     return fig
-            
-            # Linear scale plot
-            axes[idx, 0].scatter(exposure_times, pixel_data, label='Data')
-            axes[idx, 0].plot(x_fine, y_fine, 'r-', label='Fitted Curve')
-            axes[idx, 0].plot(x_fine, linear_response
 
 
 def import_darkcount_data(directory):

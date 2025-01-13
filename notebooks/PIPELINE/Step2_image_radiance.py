@@ -38,7 +38,7 @@ def precompute_zmax(Slinear, Sd, bias, exposure_times):
     Precompute Zmax for all pixels and exposure times.
     
     Args:
-    Slinear (numpy.ndarray): Array of linear saturation levels for each pixel.
+    Slinear (numpy.ndarray): Array of saturation levels for each pixel.
     Sd (numpy.ndarray): Array of dark current slopes for each pixel.
     bias (numpy.ndarray): Array of bias values for each pixel.
     exposure_times (numpy.ndarray): Array of exposure times.
@@ -175,87 +175,6 @@ def square_weight(z, Zmax):
          x = 0
     return x
 
-
-""" def load_clipped_denoised_data(directory, experiment_title, base_data_folder, extract=False):
-    """
-"""
-    Load clipped and denoised data from the final_data folder.
-    
-    Args:
-    directory (str): The main directory containing the data folders.
-    experiment_title (str): The title of the experiment.
-    base_data_folder (str): The name of the base data folder.
-    extract (bool): If True, extract data into separate standard arrays.
-    
-    Returns:
-    dict: A dictionary containing the loaded data for each laser-filter combination.
-    """
-"""
-    #experiment_folder = os.path.basename(os.path.normpath(directory))
-    final_data_folder = os.path.join(directory, base_data_folder, "final_data")
-    
-    data_dict = {}
-    
-    for file in os.listdir(final_data_folder):
-        if file.endswith("_clipped_denoised.npy"):
-            key = file[:-21]  # Remove '_clipped_denoised.npy'
-            file_path = os.path.join(final_data_folder, file)
-            
-            loaded_data = np.load(file_path)
-            
-            if extract:
-                # Extract data into separate standard arrays
-                images = loaded_data['image']
-                exposure_times = loaded_data['exposure_time']
-                data_dict[key] = {
-                    'images': images,
-                    'exposure_times': exposure_times
-                }
-            else:
-                # Keep data in the structured array format
-                data_dict[key] = loaded_data
-    
-    return data_dict
-
-def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, return_all=False, crf=None, weighting_function=debevec_weight):
-    logger.info("Starting computeRadianceMap function")
-    import os
-
-    abspath = os.path.abspath(__file__)
-    dname = os.path.dirname(abspath.p)
-    os.chdir(dname)
-    intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
-    logger.info("Finished sampleIntensities function")
-    if crf == None:
-        response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, weighting_function, z_min, z_max, Zmax_precomputed)
-    elif  crf == True:
-        response_curve = np.load("C:\\Users\\apate\\OneDrive - Northeastern University\\Dennis Lab site\\Image processing\\IR VIVO data\\developing functions and PIPELINE data (archive)\\PIPELINE_data\\240329_Water_immersed\\final_data\\Water_immersed_crf_data.npz")
-    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
-
-    num_images, height, width = images.shape
-    radiance_map = np.zeros((height, width), dtype=np.float32)
-    sum_weights = np.zeros((height, width), dtype=np.float32)
-
-    for i in range(num_images):
-        w = weighting_function(images[i], Zmax_precomputed[i])
-        
-        # Convert images to integer indices
-        indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
-        
-        radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
-        sum_weights += w
-
-    sum_weights[sum_weights == 0] = 1e-6
-    radiance_map /= sum_weights
-
-    logger.info("Finished computeRadianceMap function")
-
-    if return_all:
-        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
-    else:
-        return radiance_map
- """
-
 def load_data(directory, base_data_folder):
     """Load data based on filename tags."""
     final_data_folder = os.path.join(directory, base_data_folder, "processed_data")
@@ -282,102 +201,8 @@ def load_data(directory, base_data_folder):
     
     return data_dict
 
-def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, 
-                      return_all=False, crf=None, weighting_function=debevec_weight, key = None):
-    intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
-    
-    if crf is None:
-        response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, 
-                                            smoothing_lambda, weighting_function, z_min, z_max, 
-                                            Zmax_precomputed, key = key)
-    else:
-        response_curve = crf
-        
-    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
 
-    num_images, height, width = images.shape
-    radiance_map = np.zeros((height, width), dtype=np.float32)
-    sum_weights = np.zeros((height, width), dtype=np.float32)
-
-    for i in range(num_images):
-        w = weighting_function(images[i], Zmax_precomputed[i])
-        indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
-        radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
-        sum_weights += w
-
-    sum_weights[sum_weights == 0] = 1e-6
-    radiance_map /= sum_weights
-
-    if return_all:
-        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
-    return radiance_map
-
-
-def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, 
-                        weighting_function, z_min, z_max, Zmax_precomputed, key = None):
-    num_samples, num_images = intensity_samples.shape
-    print(num_images, num_samples)
-    
-    intensity_range = int(np.max(Zmax_precomputed)) - z_min + 1
-    z_mid = int((z_min + z_max) // 2)
-
-    total_constraints = (num_samples * num_images + intensity_range - 2 + 
-                        intensity_range - 1 + 1)
-
-    mat_A = np.zeros((total_constraints, intensity_range), dtype=np.float64)
-    mat_b = np.zeros((total_constraints, 1), dtype=np.float64)
-
-    k = 0
-    for i in range(num_samples):
-        for j in range(num_images):
-            current_zmax = np.median(Zmax_precomputed[j])
-            z_ij = intensity_samples[i, j]
-            w_ij = weighting_function(z_ij, current_zmax)
-
-            
-            z_ij_scalar = int(z_ij)
-            w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
-            
-            mat_A[k, z_ij_scalar - z_min] = w_ij_scalar
-            mat_b[k, 0] = w_ij_scalar * log_exposures[i, j]
-            k += 1
-
-    for z_k in range(z_min + 1, int(np.max(Zmax_precomputed))):
-        w_k = weighting_function(z_k, np.max(Zmax_precomputed[-1]))
-        w_k_scalar = np.mean(w_k) if isinstance(w_k, np.ndarray) else float(w_k)
-        mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
-        k += 1
-
-    for z_k in range(z_min, int(np.max(Zmax_precomputed)) - 1):
-        if k < total_constraints - 1:
-            mat_A[k, z_k - z_min] = -1
-            mat_A[k, z_k - z_min + 1] = 1
-            mat_b[k, 0] = 0.001
-            k += 1
-        else:
-            break
-
-    mat_A[k, z_mid - z_min] = 1
-    mat_b[k, 0] = 0
-
-    x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
-    response_curve = x.flatten()
-
-    filter_info = key
-    weight_name = weighting_function.__name__
-    currentdate = datetime.now().strftime("%Y%m%d")
-    #save CRF to output folder
-    np.save(f"{filter_info}_crf_{weight_name}.npy", response_curve)
-    np.save(f"{filter_info}_crf_{weight_name}.npy", response_curve)
-    print(f"Saved {filter_info}_crf_{weight_name}.npy")
-
-    return response_curve
-
-
-def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve = None,
-                      smoothing_lambda=1000, weighting_function=debevec_weight, num_sets=None):
-
-    """
+"""
     Process HDR images from the given directory and experiment title.
 
     Parameters
@@ -435,13 +260,98 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
 
     """
 
+
+def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, 
+                      return_all=False, crf=None, weighting_function=debevec_weight, key=None):
+    """
+    Compute the radiance map from multiple exposures.
+    
+    Args:
+        images: Input images
+        exposure_times: Exposure times for each image
+        Zmax_precomputed: Precomputed maximum intensity values
+        smoothing_lambda: Smoothing parameter
+        return_all: Whether to return additional information
+        crf: Camera Response Function (required for mitsunaga_weight and reinhard_weight)
+        weighting_function: Function to compute weights
+        key: Identifier for saving the response curve
+        
+    Returns:
+        Radiance map and optionally additional information
+        
+    Raises:
+        ValueError: If mitsunaga_weight or reinhard_weight is used without providing a CRF
+    """
+    # Check if CRF is required but not provided
+    if weighting_function.__name__ in ['mitsunaga_weight', 'reinhard_weight'] and crf is None:
+        raise ValueError(
+            f"Weight function '{weighting_function.__name__}' requires a Camera Response Function (CRF). "
+            "Please provide a CRF parameter."
+        )
+    
+    intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
+    
+    if crf is None:
+        response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, 
+                                            smoothing_lambda, weighting_function, z_min, z_max, 
+                                            Zmax_precomputed, key=key)
+    else:
+        response_curve = crf
+        
+    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
+
+    num_images, height, width = images.shape
+    radiance_map = np.zeros((height, width), dtype=np.float32)
+    sum_weights = np.zeros((height, width), dtype=np.float32)
+
+    for i in range(num_images):
+        w = weighting_function(images[i], Zmax_precomputed[i])
+        indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
+        radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
+        sum_weights += w
+
+    sum_weights[sum_weights == 0] = 1e-6
+    radiance_map /= sum_weights
+
+    if return_all:
+        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
+    return radiance_map
+
+def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve=None,
+                      smoothing_lambda=1000, weighting_function=debevec_weight, num_sets=None):
+    """
+    Process HDR images from the given directory and experiment title.
+    
+    Args:
+        directory: Directory containing the experiment data
+        experiment_title: Title of the experiment
+        base_data_folder: Base folder containing the experiment data
+        coefficients_dict: Dictionary containing the coefficients for the camera response function
+        response_curve: Optional pre-computed camera response function
+        smoothing_lambda: Smoothing parameter for the camera response function
+        weighting_function: Function to compute weights
+        num_sets: Number of sets to process
+        
+    Returns:
+        List of dictionaries containing the processed HDR images
+        
+    Raises:
+        ValueError: If mitsunaga_weight or reinhard_weight is used without providing a response_curve
+    """
+    # Check if CRF is required but not provided
+    if weighting_function.__name__ in ['mitsunaga_weight', 'reinhard_weight'] and response_curve is None:
+        raise ValueError(
+            f"Weight function '{weighting_function.__name__}' requires a Camera Response Function (CRF). "
+            "Please provide a response_curve parameter."
+        )
+
     os.chdir(os.path.join(directory, base_data_folder))
     data_dict = load_data(directory, base_data_folder)
     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
     
     os.makedirs(final_data_folder, exist_ok=True)
     
-    Slinear = coefficients_dict['Smax']
+    Smax = coefficients_dict['Smax']
     Sd = coefficients_dict['Sd']
     bias = coefficients_dict['b']
     
@@ -453,16 +363,16 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
     for key, item in data_dict.items():
         data = item['data']
         data_type = item['type']
-        #key 
 
         images = data['image']
         exposure_times = data['exposure_time']
         
-        Zmax_precomputed = precompute_zmax(Slinear, Sd, bias, exposure_times)
+        Zmax_precomputed = precompute_zmax(Smax, Sd, bias, exposure_times)
         
-        radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
-            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, crf=response_curve,
-            return_all=True, weighting_function=weighting_function, key = key
+        radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
+            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, 
+            crf=response_curve, return_all=True, weighting_function=weighting_function, 
+            key=key
         )
         
         radiance_map_filename = f"{key}_radiance_map_{data_type}_{weighting_function.__name__}.npy"
@@ -473,14 +383,77 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
             'key': key,
             'data_type': data_type,
             'radiance_map': radiance_map,
-            'response_curve': response_curve,
+            'response_curve': response_curve_computed,
             'z_min': z_min,
             'z_max': z_max,
             'intensity_samples': intensity_samples,
             'log_exposures': log_exposures
         })
+        response_curve = None
         
     return processed_data
+
+def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, 
+                        weighting_function, z_min, z_max, Zmax_precomputed, key = None):
+    num_samples, num_images = intensity_samples.shape
+    print(num_images, num_samples)
+    
+    # Use actual maximum from samples instead of Zmax_precomputed
+    actual_max = int(np.max(intensity_samples))
+    intensity_range = actual_max - z_min + 1
+    z_mid = int((z_min + actual_max) // 2)
+
+    total_constraints = (num_samples * num_images + intensity_range - 2 + 
+                        intensity_range - 1 + 1)
+
+    mat_A = np.zeros((total_constraints, intensity_range), dtype=np.float64)
+    mat_b = np.zeros((total_constraints, 1), dtype=np.float64)
+
+    k = 0
+    for i in range(num_samples):
+        for j in range(num_images):
+            current_zmax = np.median(Zmax_precomputed[j])
+            z_ij = intensity_samples[i, j]
+            w_ij = weighting_function(z_ij, current_zmax)
+            
+            z_ij_scalar = int(z_ij)
+            w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
+            
+            mat_A[k, z_ij_scalar - z_min] = w_ij_scalar
+            mat_b[k, 0] = w_ij_scalar * log_exposures[i, j]
+            k += 1
+
+    # Use actual_max instead of Zmax_precomputed for smoothness constraints
+    for z_k in range(z_min + 1, actual_max):
+        w_k = weighting_function(z_k, actual_max)
+        w_k_scalar = np.mean(w_k) if isinstance(w_k, np.ndarray) else float(w_k)
+        mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
+        k += 1
+
+    for z_k in range(z_min, actual_max - 1):
+        if k < total_constraints - 1:
+            mat_A[k, z_k - z_min] = -1
+            mat_A[k, z_k - z_min + 1] = 1
+            mat_b[k, 0] = 0.001
+            k += 1
+        else:
+            break
+
+    mat_A[k, z_mid - z_min] = 1
+    mat_b[k, 0] = 0
+
+    x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
+    response_curve = x.flatten()
+
+    filter_info = key
+    weight_name = weighting_function.__name__
+    currentdate = datetime.now().strftime("%Y%m%d")
+    #save CRF to output folder
+    np.save(f"{filter_info}_crf_{weight_name}.npy", response_curve)
+    print(f"Saved {filter_info}_crf_{weight_name}.npy")
+
+    return response_curve
+
 
 
 
