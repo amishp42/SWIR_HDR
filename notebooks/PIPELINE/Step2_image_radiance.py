@@ -12,7 +12,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-from matplotlib.gridspec import GridSpec
+from matplotlib.gridspec import GridSpec]
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,7 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
 
         images = data['image']
         exposure_times = data['exposure_time']
-        
+        print(exposure_times)
         Zmax_precomputed = precompute_zmax(Smax, Sd, bias, exposure_times)
         
         radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
@@ -389,8 +390,26 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
             'intensity_samples': intensity_samples,
             'log_exposures': log_exposures
         })
-        response_curve = None
         
+        #save a .txt file with inputs used for processing
+        #Get git hash and tag if it exists 
+        version = subprocess.check_output(['git', 'describe', '--always', '--dirty']).strip().decode('utf-8')
+        #Get time and date
+        date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(os.path.join(final_data_folder, f'{key}_inputs.txt'),'w') as f:
+            f.write(f"Version: {version}\n")
+            f.write(f"Date: {date}\n")
+            f.write(f"Data Directory: {directory}\n")
+            f.write(f"Experiment Title: {experiment_title}\n")
+            f.write(f"Number of Sets: {num_sets}\n")
+            f.write(f"log(Exposure Times): {exposure_times}\n")
+            f.write(f"Smoothing Lambda: {smoothing_lambda}\n")
+            f.write(f"Weighting Function: {weighting_function.__name__}\n")
+            f.write(f"Camera Response Function: {response_curve}\n")
+            response_curve = None
+
+
+
     return processed_data
 
 def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, 
@@ -700,6 +719,7 @@ def capture_plots(data, adaptive_weight):
     return buf
 
 def generate_multi_page_report(processed_data, directory, experiment_title, adaptive_weight, base_data_folder):
+    #adaptive weight is the weighting function used in analysis
     #experiment_folder = os.path.basename(os.path.normpath(directory))
     data_folder = os.path.join(directory, base_data_folder)
 

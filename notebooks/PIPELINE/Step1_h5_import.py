@@ -109,6 +109,7 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
     }
     
     data_folder = os.path.join(directory, base_data_folder, "raw_data")
+
     os.makedirs(data_folder, exist_ok=True)
     
     cutoff_datetime_1 = datetime.strptime(date_cutoff_1, '%Y/%m/%d')
@@ -204,81 +205,6 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
     
     print(f"Raw data saved in: {data_folder}")
     return data_folder
-
-def clip_and_save(directory, Slinear, base_data_folder):
-    raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
-    clipped_data_folder = os.path.join(directory, base_data_folder, "processed_data")
-    os.makedirs(clipped_data_folder, exist_ok=True)
-
-    for file in os.listdir(raw_data_folder):
-        if file.endswith("_raw.npy"):
-            key = file[:-8]  # Remove '_raw.npy'
-            raw_data_file = os.path.join(raw_data_folder, file)
-            
-            # Load raw data
-            raw_data = np.load(raw_data_file)
-            print(raw_data.shape)
-            # Initialize an array to store clipped data
-            clipped_data = np.zeros(raw_data.shape, dtype=raw_data.dtype)
-            
-            # Ensure Slinear has the correct shape
-            if Slinear.shape != raw_data['image'][0].shape:
-                Slinear = np.broadcast_to(Slinear, raw_data['image'][0].shape)
-            
-            # Process all images at once
-            clipped_images = np.minimum(raw_data['image'], Slinear)
-
-            # Store the clipped data
-            clipped_data['exposure_time'] = raw_data['exposure_time']
-            clipped_data['image'] = clipped_images
-
-            # Save the clipped data
-            np.save(os.path.join(clipped_data_folder, f"{key}_clipped.npy"), clipped_data)
-
-    print(f"Clipped data saved in: {clipped_data_folder}")
-    return clipped_data_folder
-
-def denoise_and_save(directory, experiment_title, Sd, b, base_data_folder):
-    raw_data_folder = os.path.join(directory, base_data_folder, "raw_data")
-    denoised_data_folder = os.path.join(directory, base_data_folder, "processed_data")
-    os.makedirs(denoised_data_folder, exist_ok=True)
-
-    for file in os.listdir(raw_data_folder):
-        if file.endswith("_raw.npy"):
-            key = file[:-8]  # Remove '_raw.npy'
-            raw_data = np.load(os.path.join(raw_data_folder, file))
-
-            denoised_data = np.zeros(raw_data.shape, dtype=raw_data.dtype)
-            exposure_times = raw_data['exposure_time']
-            denoised_images = np.maximum(raw_data['image'] - (Sd * exposure_times[:, np.newaxis, np.newaxis] + b), 0)
-            
-            denoised_data['exposure_time'] = exposure_times
-            denoised_data['image'] = denoised_images
-
-            np.save(os.path.join(denoised_data_folder, f"{key}_denoised.npy"), denoised_data)
-
-    print(f"Denoised data saved in: {denoised_data_folder}")
-
-def clip_denoise_and_save(directory, experiment_title, Sd, b, base_data_folder):
-    clipped_data_folder = os.path.join(directory, base_data_folder, "processed_data")
-    clipped_denoised_data_folder = os.path.join(directory,base_data_folder, "final_data")
-    os.makedirs(clipped_denoised_data_folder, exist_ok=True)
-
-    for file in os.listdir(clipped_data_folder):
-        if file.endswith("_clipped.npy"):
-            key = file[:-12]  # Remove '_clipped.npy'
-            clipped_data = np.load(os.path.join(clipped_data_folder, file))
-
-            clipped_denoised_data = np.zeros(clipped_data.shape, dtype=clipped_data.dtype)
-            exposure_times = clipped_data['exposure_time']
-            clipped_denoised_images = np.maximum(clipped_data['image'] - (Sd * exposure_times[:, np.newaxis, np.newaxis] + b), 0)
-            
-            clipped_denoised_data['exposure_time'] = exposure_times
-            clipped_denoised_data['image'] = clipped_denoised_images
-
-            np.save(os.path.join(clipped_denoised_data_folder, f"{key}_clipped_denoised.npy"), clipped_denoised_data)
-
-    print(f"Clipped and denoised data saved in: {clipped_denoised_data_folder}")
 
 def calculate_Slinear_adjusted(directory, experiment_title, Sd, b, Slinear, base_data_folder):
     clipped_denoised_data_folder = os.path.join(directory, base_data_folder, "final_data")
