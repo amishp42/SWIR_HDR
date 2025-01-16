@@ -14,6 +14,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 from matplotlib.gridspec import GridSpec
 import subprocess
+from git import Repo
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,7 @@ def load_data(directory, base_data_folder):
 
 
 def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, 
-                      return_all=False, crf=None, weighting_function=debevec_weight, key=None):
+                      return_all=False, crf="default", weighting_function=debevec_weight, key=None, repo=None):
     """
     Compute the radiance map from multiple exposures.
     
@@ -292,7 +293,9 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
     
     intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
     
-    if crf is None:
+    if crf == "default":
+        response_curve = np.load(os.path.join(repo, "data\\crf.npy"))
+    elif crf is None:
         response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, 
                                             smoothing_lambda, weighting_function, z_min, z_max, 
                                             Zmax_precomputed, key=key)
@@ -318,7 +321,7 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
         return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
     return radiance_map
 
-def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve=None,
+def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve="default",
                       smoothing_lambda=1000, weighting_function=debevec_weight, num_sets=None):
     """
     Process HDR images from the given directory and experiment title.
@@ -345,7 +348,7 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
             f"Weight function '{weighting_function.__name__}' requires a Camera Response Function (CRF). "
             "Please provide a response_curve parameter."
         )
-
+    repodirectory = os.getcwd()
     os.chdir(os.path.join(directory, base_data_folder))
     data_dict = load_data(directory, base_data_folder)
     final_data_folder = os.path.join(directory, base_data_folder, "final_data")
@@ -373,7 +376,7 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
         radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
             images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, 
             crf=response_curve, return_all=True, weighting_function=weighting_function, 
-            key=key
+            key=key, repo = repodirectory
         )
         
         radiance_map_filename = f"{key}_radiance_map_{data_type}_{weighting_function.__name__}.npy"
@@ -393,9 +396,37 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
         
         #save a .txt file with inputs used for processing
         #Get git hash and tag if it exists 
-        version = subprocess.check_output(['git', 'describe', '--always', '--dirty']).strip().decode('utf-8')
+        def find_repository_from_child_dir():
+            current = repodirectory
+            while current:
+                if os.path.exists(os.path.join(current, '.git')):
+                    return Repo(current)
+                parent = os.path.dirname(current)
+                if parent == current:  # We've hit the root
+                    break
+                current = parent
+            return None
+
+        def get_git_version():
+            repo = find_repository_from_child_dir()
+            if repo:
+                commit_hash = repo.head.commit.hexsha[:7]
+                
+                try:
+                    # Get the latest tag by running git describe
+                    tag = subprocess.check_output(['git', 'describe', '--tags', '--abbrev=0'],
+                                                cwd=repo.working_dir,
+                                                stderr=subprocess.STDOUT).decode('utf-8').strip()
+                    return f"{tag}-{commit_hash}"
+                except subprocess.CalledProcessError:
+                    return f"untagged-{commit_hash}"
+                    
+            return "Error: No git repository found in this directory or its parents"
+
+        version = get_git_version()
+        print(f"Version: {version}")
         #Get time and date
-        date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(os.path.join(final_data_folder, f'{key}_inputs.txt'),'w') as f:
             f.write(f"Version: {version}\n")
             f.write(f"Date: {date}\n")
