@@ -12,7 +12,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-from matplotlib.gridspec import GridSpec]
+from matplotlib.gridspec import GridSpec
 import subprocess
 
 logger = logging.getLogger(__name__)
