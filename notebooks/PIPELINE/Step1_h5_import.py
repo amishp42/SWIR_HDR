@@ -123,7 +123,7 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
             try:
                 with h5py.File(os.path.join(directory, file), 'r') as h5f:
                     # Get timestamp and seconds from file
-
+                                         
                     timestamp_bytes = h5f['Cube']['Timestamp'][()]
                     timestamp_str = str(timestamp_bytes.item())
                     timestamp_str = timestamp_str.strip("b'") 

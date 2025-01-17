@@ -292,7 +292,7 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
         )
     
     intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
-    
+    #check crf input
     if crf == "default":
         response_curve = np.load(os.path.join(repo, "data\\crf.npy"))
     elif crf is None:
@@ -301,8 +301,6 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
                                             Zmax_precomputed, key=key)
     else:
         response_curve = crf
-        
-    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
 
     num_images, height, width = images.shape
     radiance_map = np.zeros((height, width), dtype=np.float32)
@@ -501,7 +499,7 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
     #save CRF to output folder
     np.save(f"{filter_info}_crf_{weight_name}.npy", response_curve)
     print(f"Saved {filter_info}_crf_{weight_name}.npy")
-
+    response_curve = savgol_filter(response_curve, window_length=51, polyorder=3)
     return response_curve
 
 
@@ -519,7 +517,7 @@ def estimate_radiance(images, exposure_times, Zmax_precomputed, weighting_functi
     
     return radiance / np.maximum(weight_sum, 1e-6)
 
-def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=50000):
+def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=5000):
     """Sample pixel intensities from the exposure stack."""
     num_images, height, width = images.shape
     z_min = 0  # Assuming the minimum is always 0 after dark current subtraction
@@ -527,7 +525,7 @@ def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=5000
     logger.info(f"z_max: {z_max}; z_min: {z_min}")
 
     # Ensure num_samples is an integer
-    num_samples = int(num_samples)
+    num_samples = int(z_max - z_min)*2
     logger.info(f"num_samples: {num_samples}")
 
     # Use the updated estimate_radiance function that takes Zmax_precomputed
