@@ -71,7 +71,7 @@ def debevec_weight(z, Zmax):
      # Ensure z and Zmax are scalars or have the same shape
      
      if np.isscalar(z) and np.isscalar(Zmax):
-         middle = (Zmax + Zmin) / 2
+         middle = (Zmax - Zmin) / 2
          if z <= middle:
              return (z - Zmin) / (middle - Zmin)
          else:
@@ -83,7 +83,7 @@ def debevec_weight(z, Zmax):
              Zmax = np.full_like(z, Zmax)
         
          weight = np.zeros_like(z, dtype=np.float32)
-         middle = (Zmax + Zmin) / 2
+         middle = (Zmax - Zmin) / 2
          weight[z <= middle] = (z[z <= middle] - Zmin) / (middle[z <= middle] - Zmin)
          weight[z > middle] = (Zmax[z > middle] - z[z > middle]) / (Zmax[z > middle] - middle[z > middle])
          return weight
@@ -291,9 +291,9 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
             "Please provide a CRF parameter."
         )
     
-    intensity_samples, log_exposures, z_min, z_max = sampleIntensities(images, exposure_times, Zmax_precomputed)
+    intensity_samples, log_exposures, sample_radiance, z_min, z_max  = sampleIntensities(images, exposure_times, Zmax_precomputed, weighting_function)
     #check crf input
-    if crf == "default":
+    if str(crf) == "default":
         response_curve = np.load(os.path.join(repo, "data\\crf.npy"))
     elif crf is None:
         response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, 
@@ -316,8 +316,56 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
     radiance_map /= sum_weights
 
     if return_all:
-        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures
+        return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures, sample_radiance
     return radiance_map
+
+
+def get_unique_filename(filepath):
+    """
+    Generate a unique filename by appending a counter if the file already exists.
+    
+    Args:
+        filepath: Original filepath
+        
+    Returns:
+        Unique filepath that doesn't exist in the target directory
+    """
+    directory = os.path.dirname(filepath)
+    filename = os.path.basename(filepath)
+    base, ext = os.path.splitext(filename)
+    
+    counter = 1
+    new_filepath = filepath
+    while os.path.exists(new_filepath):
+        new_filepath = os.path.join(directory, f"{base}_{counter}{ext}")
+        counter += 1
+    
+    return new_filepath
+
+def save_as_tiff(radiance_map, filepath, log_scale=False):
+    """
+    Save radiance map as a TIFF file.
+    
+    Args:
+        radiance_map: The radiance map to save
+        filepath: Target filepath
+        log_scale: Whether to save in log scale
+    """
+    import tifffile
+    
+    # Create a copy to avoid modifying the original
+    data = radiance_map.copy()
+    
+    if log_scale:
+        # Add small constant to avoid log(0)
+        data = np.log(data + 1e-10)
+    
+    # Get unique filename
+    unique_filepath = get_unique_filename(filepath)
+    
+    # Save as 32-bit float TIFF with filter and excitation information
+
+    tifffile.imwrite(unique_filepath, data.astype(np.float32))
 
 def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve="default",
                       smoothing_lambda=1000, weighting_function=debevec_weight, num_sets=None):
@@ -340,12 +388,8 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
     Raises:
         ValueError: If mitsunaga_weight or reinhard_weight is used without providing a response_curve
     """
-    # Check if CRF is required but not provided
-    if weighting_function.__name__ in ['mitsunaga_weight', 'reinhard_weight'] and response_curve is None:
-        raise ValueError(
-            f"Weight function '{weighting_function.__name__}' requires a Camera Response Function (CRF). "
-            "Please provide a response_curve parameter."
-        )
+    # [Previous code remains the same until saving files...]
+    
     repodirectory = os.getcwd()
     os.chdir(os.path.join(directory, base_data_folder))
     data_dict = load_data(directory, base_data_folder)
@@ -371,27 +415,34 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
         print(exposure_times)
         Zmax_precomputed = precompute_zmax(Smax, Sd, bias, exposure_times)
         
-        radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures = computeRadianceMap(
+        radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures, sample_radiance = computeRadianceMap(
             images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, 
             crf=response_curve, return_all=True, weighting_function=weighting_function, 
-            key=key, repo = repodirectory
+            key=key, repo=repodirectory
         )
-        
+        if response_curve_computed is None:
+            response_curve_computed = response_curve
+
+        # Save .npy file with unique filename
         radiance_map_filename = f"{key}_radiance_map_{data_type}_{weighting_function.__name__}.npy"
+        radiance_map_path = os.path.join(final_data_folder, radiance_map_filename)
+        unique_npy_path = get_unique_filename(radiance_map_path)
+        np.save(unique_npy_path, radiance_map)
         
-        np.save(os.path.join(final_data_folder, radiance_map_filename), radiance_map)
+        # Save TIFF files in both linear and log scale
+        tiff_base = os.path.splitext(radiance_map_filename)[0]
+        linear_tiff_path = os.path.join(final_data_folder, f"{tiff_base}_linear.tif")
+        log_tiff_path = os.path.join(final_data_folder, f"{tiff_base}_log.tif")
         
-        processed_data.append({
-            'key': key,
-            'data_type': data_type,
-            'radiance_map': radiance_map,
-            'response_curve': response_curve_computed,
-            'z_min': z_min,
-            'z_max': z_max,
-            'intensity_samples': intensity_samples,
-            'log_exposures': log_exposures
-        })
+        save_as_tiff(radiance_map, linear_tiff_path, log_scale=False)
+        save_as_tiff(radiance_map, log_tiff_path, log_scale=True)
         
+        # Save input parameters with unique filename
+        input_filename = f'{key}_inputs.txt'
+        input_path = os.path.join(final_data_folder, input_filename)
+        unique_input_path = get_unique_filename(input_path)
+
+
         #save a .txt file with inputs used for processing
         #Get git hash and tag if it exists 
         def find_repository_from_child_dir():
@@ -421,24 +472,47 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
                     
             return "Error: No git repository found in this directory or its parents"
 
+        # Get version info
         version = get_git_version()
-        print(f"Version: {version}")
-        #Get time and date
         date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(os.path.join(final_data_folder, f'{key}_inputs.txt'),'w') as f:
+        
+        with open(unique_input_path, 'w') as f:
             f.write(f"Version: {version}\n")
             f.write(f"Date: {date}\n")
             f.write(f"Data Directory: {directory}\n")
             f.write(f"Experiment Title: {experiment_title}\n")
             f.write(f"Number of Sets: {num_sets}\n")
-            f.write(f"log(Exposure Times): {exposure_times}\n")
+            f.write(f"Exposure Times: {exposure_times}\n")
             f.write(f"Smoothing Lambda: {smoothing_lambda}\n")
             f.write(f"Weighting Function: {weighting_function.__name__}\n")
             f.write(f"Camera Response Function: {response_curve}\n")
-            response_curve = None
-
-
-
+            f.write(f"Output Files:\n")
+            f.write(f"  - NPY: {os.path.basename(unique_npy_path)}\n")
+            f.write(f"  - TIFF (Linear): {os.path.basename(linear_tiff_path)}\n")
+            f.write(f"  - TIFF (Log): {os.path.basename(log_tiff_path)}\n")
+        
+        processed_data.append({
+            'key': key,
+            'data_type': data_type,
+            'radiance_map': radiance_map,
+            'response_curve': response_curve_computed,
+            'z_min': z_min,
+            'z_max': z_max,
+            'intensity_samples': intensity_samples,
+            'log_exposures': log_exposures,
+            'sample_radiance': sample_radiance,
+            'exposure_times': exposure_times,
+            'output_files': {
+                'npy': unique_npy_path,
+                'tiff_linear': linear_tiff_path,
+                'tiff_log': log_tiff_path,
+                'inputs': unique_input_path
+            }
+        })
+        #pickle the processed_data object into the final_data folder
+        import pickle
+        with open(os.path.join(final_data_folder, f'{key}_processed_data.pkl'), 'wb') as f:
+            pickle.dump(processed_data, f)
     return processed_data
 
 def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, 
@@ -517,60 +591,81 @@ def estimate_radiance(images, exposure_times, Zmax_precomputed, weighting_functi
     
     return radiance / np.maximum(weight_sum, 1e-6)
 
-def sampleIntensities(images, exposure_times, Zmax_precomputed, num_samples=5000):
-    """Sample pixel intensities from the exposure stack."""
+def sampleIntensities(images, exposure_times, Zmax_precomputed, weighting_function=debevec_weight):
+    """Sample pixel intensities from the exposure stack, ensuring same pixels are sampled across all exposures."""
     num_images, height, width = images.shape
-    z_min = 0  # Assuming the minimum is always 0 after dark current subtraction
-    z_max = np.max(Zmax_precomputed)  # Use the maximum value across all Zmax_precomputed
+    z_min = 0
+    z_max = np.max(Zmax_precomputed)
     logger.info(f"z_max: {z_max}; z_min: {z_min}")
 
-    # Ensure num_samples is an integer
-    num_samples = int(z_max - z_min)*2
-    logger.info(f"num_samples: {num_samples}")
+    # Find reference image (first image that reaches 95% of Zmax)
+    max_intensities = np.array([np.max(img) for img in images])
+    threshold = 0.95 * z_max
+    reference_indices = np.where(max_intensities >= threshold)[0]
+    reference_idx = reference_indices[0] if len(reference_indices) > 0 else num_images // 2
+    reference_image = images[reference_idx]
+    logger.info(f"Using image {reference_idx} as reference (max intensity: {max_intensities[reference_idx]:.2f}, threshold: {threshold:.2f})")
+    # Set default num_samples
+    num_samples = int(10000)
 
-    # Use the updated estimate_radiance function that takes Zmax_precomputed
-    radiance = estimate_radiance(images, exposure_times, Zmax_precomputed)
-
-    # Logarithmic binning   
+    # Logarithmic binning setup
     num_bins = min(num_samples // num_images, int(z_max - z_min + 1))
-    num_bins = max(1, int(num_bins))  # Ensure at least one bin
+    num_bins = max(1, int(num_bins))
     logger.info(f"num_bins: {num_bins}")
 
     bins = np.logspace(np.log10(z_min + 1), np.log10(z_max + 1), num_bins + 1) - 1
     bins = np.unique(bins.astype(int))
     logger.info(f"Number of unique bins: {len(bins)}")
 
-    sampled_pixels = []
-    for i, img in enumerate(images):
-        for j in range(len(bins) - 1):
-            bin_mask = (img >= bins[j]) & (img < bins[j+1])
-            pixels_in_bin = np.where(bin_mask)
-            if len(pixels_in_bin[0]) > 0:
-                num_to_sample = min(len(pixels_in_bin[0]), num_samples // (num_images * len(bins)))
-                num_to_sample = max(1, int(num_to_sample))  # Ensure at least 1 sample
-                logger.info(f"Sampling {num_to_sample} pixels from bin {j} in image {i}")
-                sampled_indices = np.random.choice(len(pixels_in_bin[0]), num_to_sample, replace=False)
-                sampled_pixels.extend(list(zip(pixels_in_bin[0][sampled_indices], pixels_in_bin[1][sampled_indices], [i]*num_to_sample)))
+    # Sample pixels using reference image
+    sampled_pixel_locations = []
+    for j in range(len(bins) - 1):
+        bin_mask = (reference_image >= bins[j]) & (reference_image < bins[j+1])
+        pixels_in_bin = np.where(bin_mask)
+        
+        if len(pixels_in_bin[0]) > 0:
+            num_to_sample = min(len(pixels_in_bin[0]), num_samples / len(bins))
+            num_to_sample = max(1, int(num_to_sample))
+            logger.info(f"Sampling {num_to_sample} pixels from bin {j}")
+            
+            sampled_indices = np.random.choice(len(pixels_in_bin[0]), num_to_sample, replace=False)
+            sampled_rows = pixels_in_bin[0][sampled_indices]
+            sampled_cols = pixels_in_bin[1][sampled_indices]
+            sampled_pixel_locations.extend(list(zip(sampled_rows, sampled_cols)))
 
-    logger.info(f"Total sampled pixels: {len(sampled_pixels)}")
+    logger.info(f"Total sampled pixel locations: {len(sampled_pixel_locations)}")
 
-    intensity_samples = np.zeros((len(sampled_pixels), num_images), dtype=np.float32)
-    log_exposures = np.zeros((len(sampled_pixels), num_images))
-
-    for i, (row, col, img_idx) in enumerate(sampled_pixels):
+    # Initialize arrays for both types of exposures
+    intensity_samples = np.zeros((len(sampled_pixel_locations), num_images), dtype=np.float32)
+    log_exposures = np.zeros((len(sampled_pixel_locations), num_images))
+    sample_radiance = np.zeros((len(sampled_pixel_locations), num_images))
+    
+    # Calculate radiance
+    radiance = estimate_radiance(images, exposure_times, Zmax_precomputed, weighting_function)
+    
+    # Fill arrays
+    for i, (row, col) in enumerate(sampled_pixel_locations):
         for j in range(num_images):
             intensity_samples[i, j] = images[j, row, col]
+            # Store exposure-time adjusted values (original method)
             log_exposures[i, j] = np.log(radiance[row, col] * exposure_times[j] + 1e-10)
+            # Store unadjusted values
+            sample_radiance[i, j] = np.log(radiance[row, col] + 1e-10)
 
-    # Relaxed validity criteria using Zmax_precomputed
-    valid_samples = np.sum((intensity_samples > 0) & (intensity_samples < Zmax_precomputed[:, row, col]), axis=1) >= num_images // 2
+    # Validate samples using Zmax_precomputed
+    valid_samples = np.zeros(len(sampled_pixel_locations), dtype=bool)
+    for i, (row, col) in enumerate(sampled_pixel_locations):
+        valid_exposures = (intensity_samples[i] > 0) & (intensity_samples[i] < Zmax_precomputed[:, row, col])
+        valid_samples[i] = np.sum(valid_exposures) >= num_images // 2
+
+    # Filter out invalid samples
     intensity_samples = intensity_samples[valid_samples]
     log_exposures = log_exposures[valid_samples]
+    sample_radiance = sample_radiance[valid_samples]
+    
+    logger.info(f"Number of valid samples after filtering: {intensity_samples.shape[0]}")
 
-    logger.info(f"Number of valid samples: {intensity_samples.shape[0]}")
-
-    return intensity_samples, log_exposures, z_min, z_max
-
+    return intensity_samples, log_exposures, sample_radiance, z_min, z_max
 
 def save_radiance_map(radiance_map, directory, experiment_title, base_data_folder):
     """Save the unscaled radiance map."""
@@ -761,6 +856,7 @@ def generate_multi_page_report(processed_data, directory, experiment_title, adap
     
     class MyDocTemplate(BaseDocTemplate):
         def __init__(self, filename, **kw):
+            
             BaseDocTemplate.__init__(self, filename, **kw)
             frame = Frame(self.leftMargin, self.bottomMargin + 0.5*inch,
                           self.width, self.height - inch,

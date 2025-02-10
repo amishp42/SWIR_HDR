@@ -102,21 +102,6 @@ def sigmoid_curve(t, a, b, c, d):
     """
     return a / (1 + np.exp(-c * (np.log10(t) - b))) + d
 
-def sigmoid_curve(t, a, b, c, d):
-    """
-    Generalized sigmoidal function for log-linear fitting.
-    
-    Args:
-        t: exposure times
-        a: amplitude parameter
-        b: center point in log space
-        c: steepness parameter
-        d: vertical offset
-    
-    Returns:
-        Sigmoidal curve values
-    """
-    return a / (1 + np.exp((b - np.log10(t))/c)) + d
 
 def log_linear_range_sigmoid(b, c):
     """

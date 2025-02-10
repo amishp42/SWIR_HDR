@@ -95,7 +95,7 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
     # Define three sets of emission filters
     early_emission_filters = {
         '12': 'BP1100', '13': 'BP1150', '14': 'BP1300',
-        '15': 'BP1350', '16': 'BP1500', '17': 'BP1555'
+        '15': 'BP1350', '16': 'BP1500', '17': 'BP1550'
     }
     
     middle_emission_filters = {
@@ -104,7 +104,8 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
     }
     
     latest_emission_filters = {
-        '12': 'BP1150', '13': 'BP1200', '14': 'BP1300',
+        
+        '11': 'LP1250', '12': 'BP1150', '13': 'BP1200', '14': 'BP1300',
         '15': 'BP1350', '16': 'BP1500', '17': 'BP1550'
     }
     

@@ -10,9 +10,11 @@ dependencies:
   - python=3.12.3
   - scikit-learn
   - scikit-image
-  - opencv
   - pandas
   - numpy
   - pathlib
   - h5py
+  - tiffile
+  - pickle
+  - os
   - spectrochempy=0.6.8=stable
