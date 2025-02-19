@@ -37,13 +37,9 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=N
     """
     Process image data with configurable operations.
     """
-    operations = operations or []
-    params = params or {}
     
     raw_folder = import_and_save_raw(directory, experiment_title, base_data_folder)
     
-    if not operations:
-        return raw_folder
         
     # Changed to use processed_data folder
     output_folder = os.path.join(directory, base_data_folder, "processed_data")
@@ -58,9 +54,9 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=N
             images = data['image']
             
             if 'clip' in operations:
-                if 'Slinear' not in params:
-                    raise ValueError("Slinear required for clipping")
-                images = np.minimum(images, params['Slinear'])
+                if 'Smax' not in params:
+                    raise ValueError("Smax required for clipping")
+                images = np.minimum(images, params['Smax'])
                 
             if 'denoise' in operations:
                 if not all(k in params for k in ['Sd', 'b']):
@@ -71,7 +67,12 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=N
                 )
             
             processed_data['image'] = images
-            op_names = '_'.join(operations)
+            if 'clip' or 'denoise' in operations:
+                op_names = '_'.join(operations)
+            else:
+                op_names = 'raw'
+            print(op_names)
+            
             np.save(os.path.join(output_folder, f"{key}_{op_names}.npy"), processed_data)
     
     print(f"Processed data saved in: {output_folder}")

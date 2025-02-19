@@ -86,6 +86,8 @@ def linear_to_asymptote(t, slope, intercept, Smax, smoothness):
     exp_term = np.clip(exp_term, -1e15, 1e15)  # Prevent overflow
     return Smax - (1/smoothness) * np.log1p(exp_term)
 
+
+
 def sigmoid_curve(t, a, b, c, d):
     """
     Generalized sigmoidal function for log-linear fitting.
@@ -93,15 +95,14 @@ def sigmoid_curve(t, a, b, c, d):
     Args:
         t: exposure times
         a: amplitude parameter
-        b: center point (in log space)
+        b: center point in log space
         c: steepness parameter
         d: vertical offset
     
     Returns:
         Sigmoidal curve values
     """
-    return a / (1 + np.exp(-c * (np.log10(t) - b))) + d
-
+    return a / (1 + np.exp((b - np.log10(t))/c)) + d
 
 def log_linear_range_sigmoid(b, c):
     """
@@ -271,7 +272,7 @@ def analyze_light_response(light_array, exposure_times, threshold=0.01, fit_meth
                 fit_params['intercept'][i, j] = popt[1]
                 Smax[i, j] = popt[0] + popt[3]
                 print(Smax[i,j])
-                fit_params['smoothness'][i, j] = popt[3]
+                fit_params['smoothness'][i, j] = popt[2]
                 
                 # Calculate Slinear
                 if fit_method == 'log_linear':

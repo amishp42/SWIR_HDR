@@ -35,12 +35,12 @@ class FilenamePlaceholder(Flowable):
 
 
 
-def precompute_zmax(Slinear, Sd, bias, exposure_times):
+def precompute_zmax(Smax, Sd, bias, exposure_times):
     """
     Precompute Zmax for all pixels and exposure times.
     
     Args:
-    Slinear (numpy.ndarray): Array of saturation levels for each pixel.
+    Smax (numpy.ndarray): Array of saturation levels for each pixel.
     Sd (numpy.ndarray): Array of dark current slopes for each pixel.
     bias (numpy.ndarray): Array of bias values for each pixel.
     exposure_times (numpy.ndarray): Array of exposure times.
@@ -52,13 +52,13 @@ def precompute_zmax(Slinear, Sd, bias, exposure_times):
     height, width = Slinear.shape
     
     # Reshape arrays for broadcasting
-    Slinear = Slinear.reshape(1, height, width)
+    Smax = Smax.reshape(1, height, width)
     Sd = Sd.reshape(1, height, width)
     bias = bias.reshape(1, height, width)
     exposure_times = exposure_times.reshape(num_exposures, 1, 1)
     
     # Compute Zmax for all pixels and exposure times
-    Zmax = Slinear - (Sd * exposure_times + bias)
+    Zmax = Smax - (Sd * exposure_times + bias)
 
     return Zmax
 
@@ -186,15 +186,16 @@ def load_data(directory, base_data_folder):
         if file.endswith(".npy"):
             is_clipped = "_clip" in file
             is_denoised = "_denoise" in file
-            
+            is_raw = "_raw" in file
             if not (is_clipped or is_denoised):
                 continue
                 
-            key = file.split("_clip")[0] if is_clipped else file.split("_denoised")[0]
+            key = file.split("_clip")[0] if is_clipped else file.split("_denoised")[0] if is_denoised else file.split("_raw")[0] if is_raw else None
             file_path = os.path.join(final_data_folder, file)
             data_type = []
             if is_clipped: data_type.append("clip")
             if is_denoised: data_type.append("denoise")
+            if is_raw: data_type.append("raw")
             
             data_dict[key] = {
                 'data': np.load(file_path),
@@ -356,9 +357,9 @@ def save_as_tiff(radiance_map, filepath, log_scale=False):
     # Create a copy to avoid modifying the original
     data = radiance_map.copy()
     
-    if log_scale:
+    if log_scale == False:
         # Add small constant to avoid log(0)
-        data = np.log(data + 1e-10)
+        data = np.exp(data)
     
     # Get unique filename
     unique_filepath = get_unique_filename(filepath)
@@ -388,7 +389,7 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
     Raises:
         ValueError: If mitsunaga_weight or reinhard_weight is used without providing a response_curve
     """
-    # [Previous code remains the same until saving files...]
+    
     
     repodirectory = os.getcwd()
     os.chdir(os.path.join(directory, base_data_folder))

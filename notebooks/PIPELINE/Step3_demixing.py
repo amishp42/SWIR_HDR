@@ -28,7 +28,7 @@ def guessSpectra(X_flatten,nchan):
 #Required input: background subtracted stack of image data in .npy format in order of depth, if looking at multiple depths
 #outputs: mcr object, flattened raw data, concentration information in linear form, concentration map, spectral fits (constrained and not constrained)
 #if waterSpec is True, will also return the water spectrum as the final spectrum in St and St_unconstrained
-def fit_mcrals(inputData, St_guess, ndepth, nfilt, nchan, specMethod, waterSpec):
+def fit_mcrals(inputData, St_guess, ndepth, waterSpec, specMethod = "PURE SPECTRA" ):
     #rawData = np.delete(rawData,4,1)   #Delete undesired filters
     Xshape = inputData.shape
     X_flatten = inputData.reshape(-1, inputData.shape[-1]) #reduce image to 1 dimension
@@ -42,7 +42,8 @@ def fit_mcrals(inputData, St_guess, ndepth, nfilt, nchan, specMethod, waterSpec)
     #Will need to use pnnls when accounting for water spectra
     #Autofluorescence would constitute a third component
     #Using non-negativity and unimodality constraints too because of fluorescence behaviors
-    
+    nfilt = St_guess.shape[1]
+    nchan = St_guess.shape[0]
     mcr = scp.MCRALS(log_level="INFO", 
                      nonnegConc="all",nonnegSpec="all", normSpec = None,
                      unimodSpec="all", unimodSpecMod = "strict",unimodSpecTol=1.1,
@@ -55,6 +56,7 @@ def fit_mcrals(inputData, St_guess, ndepth, nfilt, nchan, specMethod, waterSpec)
     St_fit = np.empty([nchan,nfilt,ndepth])
     St_fit_nonConstrained = np.empty([nchan,nfilt,ndepth])
     
+
     #Fit MCR-ALS
     if specMethod == "SIMPLISMA":
         SIMPL_Pt_fit = np.empty([nchan,nfilt,ndepth])
@@ -92,8 +94,13 @@ def fit_mcrals(inputData, St_guess, ndepth, nfilt, nchan, specMethod, waterSpec)
     elif specMethod == "PURE SPECTRA":
         #If water spectra desired, add it as a 3rd component to spectra guess. load the water spectrum
         waterSpectra = np.zeros([nfilt,1])
+
+
+
         if waterSpec == True:
             St_guess = pd.DataFrame(data = np.concatenate((St_guess,waterSpectra),axis = 1))
+        elif waterSpec == False:
+            St_guess = St_guess
         #MCR-ALS with pure spectra
         for i in range(0,ndepth):
             if isinstance(St_guess, np.ndarray):
