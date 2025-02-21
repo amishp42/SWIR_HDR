@@ -35,7 +35,7 @@ class FilenamePlaceholder(Flowable):
 
 
 
-def precompute_zmax(Smax, Sd, bias, exposure_times):
+def precompute_zmax(images, Smax, Sd, bias, exposure_times, data_type = "clipdenoise"):
     """
     Precompute Zmax for all pixels and exposure times.
     
@@ -48,47 +48,67 @@ def precompute_zmax(Smax, Sd, bias, exposure_times):
     Returns:
     numpy.ndarray: Array of Zmax values with shape [num_exposure_times, height, width]
     """
+    is_clipped = "clip" in data_type
+    is_denoised = "denoise" in data_type
+    is_raw = "raw" in data_type
+
     num_exposures = len(exposure_times)
-    height, width = Slinear.shape
+    height, width = Smax.shape
     
     # Reshape arrays for broadcasting
     Smax = Smax.reshape(1, height, width)
     Sd = Sd.reshape(1, height, width)
     bias = bias.reshape(1, height, width)
     exposure_times = exposure_times.reshape(num_exposures, 1, 1)
+    maximages = np.max(images)
+    #broadcast maximages
+    maximages = np.full([1, height, width], maximages)
+
+
     
     # Compute Zmax for all pixels and exposure times
-    Zmax = Smax - (Sd * exposure_times + bias)
+    if is_clipped and is_denoised:
+        Zmax = Smax - (Sd * exposure_times + bias)
+        Zmin = np.zeros((num_exposures, height, width))
+    elif is_denoised:
+        Zmax = maximages - (Sd * exposure_times + bias)
+        Zmin = np.zeros((num_exposures, height, width))
+    elif is_clipped:
+        Zmax = Smax.reshape(len(exposure_times), height, width)
+        Zmin = Sd*exposure_times+bias
+    elif is_raw:
+        Zmax = maximages
+        Zmin = np.zeros((num_exposures, height, width)) 
 
-    return Zmax
+    return Zmax, Zmin
 
-def debevec_weight(z, Zmax):
-     """
-     Compute the weighting function for each pixel using the Debevec weighting function.
-     """
-     Zmin = 0  # Assuming the minimum possible pixel value is 0
+def debevec_weight(z, Zmax, Zmin):
+    """
+    Compute the weighting function for each pixel using the Debevec weighting function.
+    """
     
-     # Ensure z and Zmax are scalars or have the same shape
-     
-     if np.isscalar(z) and np.isscalar(Zmax):
-         middle = (Zmax - Zmin) / 2
-         if z <= middle:
-             return (z - Zmin) / (middle - Zmin)
-         else:
-             return (Zmax - z) / (Zmax - middle)
-     else:
-         z = np.atleast_2d(z)
-         Zmax = np.atleast_2d(Zmax)
-         if z.shape != Zmax.shape:
-             Zmax = np.full_like(z, Zmax)
-        
-         weight = np.zeros_like(z, dtype=np.float32)
-         middle = (Zmax - Zmin) / 2
-         weight[z <= middle] = (z[z <= middle] - Zmin) / (middle[z <= middle] - Zmin)
-         weight[z > middle] = (Zmax[z > middle] - z[z > middle]) / (Zmax[z > middle] - middle[z > middle])
-         return weight
+    # Ensure z and Zmax are scalars or have the same shape
 
-def robertson_weight(z, Zmax):
+    if np.isscalar(z) and np.isscalar(Zmax):
+        middle = (Zmax - Zmin) / 2
+        if z <= middle:
+            return np.divide(z - Zmin, middle - Zmin) 
+        else:
+            return np.divide(Zmax - z,Zmax - middle)
+    else:
+        z = np.atleast_2d(z)
+        Zmax = np.atleast_2d(Zmax)
+        if z.shape != Zmax.shape:
+            Zmax = np.full_like(z, Zmax)
+        
+        weight = np.zeros_like(z, dtype=np.float32)
+        middle = (Zmax - Zmin) / 2
+        
+        weight[z <= middle] = np.divide(z[z <= middle] - Zmin[z <= middle],middle[z <= middle] - Zmin[z <= middle])
+        weight[z > middle] = np.divide(Zmax[z > middle] - z[z > middle],Zmax[z > middle] - middle[z > middle])
+    return weight
+
+def robertson_weight(z, Zmax, Zmin):
     """
     Compute the weighting function for each pixel using a Gaussian function according to Robertson (2010)
     centered at the midpoint between 0 and Zmax.
@@ -100,7 +120,7 @@ def robertson_weight(z, Zmax):
     Returns:
         Weights between 0 and 1, with maximum weight at the midpoint
     """
-    Zmin = 0  # Assuming the minimum possible pixel value is 0
+
     
     # Handle scalar inputs
     if np.isscalar(z) and np.isscalar(Zmax):
@@ -125,7 +145,7 @@ def robertson_weight(z, Zmax):
         weight = np.exp(-((z - middle) ** 2) / (2 * sigma ** 2))
         return weight
 
-def broadhat_weight(z, Zmax):
+def broadhat_weight(z, Zmax, Zmin):
     """
     Compute the weighting function for each pixel using a broadhat function.
     
@@ -136,10 +156,11 @@ def broadhat_weight(z, Zmax):
     Returns:
     numpy.ndarray: Weights calculated using the broadhat function
     """
-    x = z / Zmax
+    x = np.divide(z-Zmin, Zmax) #
+
     return np.maximum(0, 1 - ((x / 0.5) - 1)**12)
 
-def linear_weight(z, Zmax):
+def linear_weight(z, Zmax, Zmin):
     """
     Compute the weighting function for each pixel using a linear function.
     
@@ -150,16 +171,18 @@ def linear_weight(z, Zmax):
     Returns:
     numpy.ndarray: Weights calculated using the linear function
     """
-    x = z / Zmax
+    x = np.divide(z-Zmin, Zmax) #z / Zmax
+    if x <0:
+        x = 0
     return x
 
-def no_weight(z, Zmax):
+def no_weight(z, Zmax, Zmin):
     """
     No weighting function, returns 1.
     """
     return 1
 
-def square_weight(z, Zmax):
+def square_weight(z, Zmax, Zmin):
     """
     Compute the weighting function for each pixel using a square function between Zmin and Zmax.
     
@@ -170,8 +193,8 @@ def square_weight(z, Zmax):
     Returns:
     numpy.ndarray: Weights calculated using the square function
     """
-    Zmin = 0
-    if z > (Zmin+200) and z < (Zmax - 200):
+    
+    if z > (Zmin+200) and z < (Zmax - 400):
          x = 1
     else:
          x = 0
@@ -183,14 +206,20 @@ def load_data(directory, base_data_folder):
     data_dict = {}
     
     for file in os.listdir(final_data_folder):
+        print(file)
         if file.endswith(".npy"):
-            is_clipped = "_clip" in file
-            is_denoised = "_denoise" in file
-            is_raw = "_raw" in file
-            if not (is_clipped or is_denoised):
-                continue
-                
-            key = file.split("_clip")[0] if is_clipped else file.split("_denoised")[0] if is_denoised else file.split("_raw")[0] if is_raw else None
+            is_clipped = "clip" in file
+            is_denoised = "denoise" in file
+            is_raw = "raw" in file
+            
+            
+            if is_clipped:
+                key = file.split("_clip")[0]  
+            elif is_denoised: 
+                key = file.split("_denoise")[0] 
+            elif is_raw:
+                key = file.split("_raw")[0]
+            
             file_path = os.path.join(final_data_folder, file)
             data_type = []
             if is_clipped: data_type.append("clip")
@@ -264,7 +293,7 @@ def load_data(directory, base_data_folder):
     """
 
 
-def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambda=1000, 
+def computeRadianceMap(images, exposure_times, Zmax_precomputed, Zmin_precomputed, smoothing_lambda=1000, 
                       return_all=False, crf="default", weighting_function=debevec_weight, key=None, repo=None):
     """
     Compute the radiance map from multiple exposures.
@@ -292,14 +321,14 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
             "Please provide a CRF parameter."
         )
     
-    intensity_samples, log_exposures, sample_radiance, z_min, z_max  = sampleIntensities(images, exposure_times, Zmax_precomputed, weighting_function)
+    intensity_samples, log_exposures, sample_radiance, z_min, z_max  = sampleIntensities(images, exposure_times, Zmax_precomputed,Zmin_precomputed, weighting_function)
     #check crf input
     if str(crf) == "default":
         response_curve = np.load(os.path.join(repo, "data\\crf.npy"))
     elif crf is None:
         response_curve = computeResponseCurve(intensity_samples, log_exposures, exposure_times, 
                                             smoothing_lambda, weighting_function, z_min, z_max, 
-                                            Zmax_precomputed, key=key)
+                                            Zmax_precomputed, Zmin_precomputed, key=key)
     else:
         response_curve = crf
 
@@ -308,7 +337,8 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, smoothing_lambd
     sum_weights = np.zeros((height, width), dtype=np.float32)
 
     for i in range(num_images):
-        w = weighting_function(images[i], Zmax_precomputed[i])
+        w = weighting_function(images[i], Zmax_precomputed[i], Zmin_precomputed[i])
+        #clip pixels below z_min
         indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
         radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
         sum_weights += w
@@ -410,18 +440,20 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
     for key, item in data_dict.items():
         data = item['data']
         data_type = item['type']
-
+        print(data_type)
         images = data['image']
         exposure_times = data['exposure_time']
         print(exposure_times)
-        Zmax_precomputed = precompute_zmax(Smax, Sd, bias, exposure_times)
+
+        Zmax_precomputed, Zmin_precomputed = precompute_zmax(images, Smax, Sd, bias, exposure_times)
+
         
         radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures, sample_radiance = computeRadianceMap(
-            images, exposure_times, Zmax_precomputed, smoothing_lambda=smoothing_lambda, 
+            images, exposure_times, Zmax_precomputed, Zmin_precomputed, smoothing_lambda=smoothing_lambda, 
             crf=response_curve, return_all=True, weighting_function=weighting_function, 
             key=key, repo=repodirectory
         )
-        if response_curve_computed is None:
+        if response_curve_computed is None: #if no response curve is computed, set response curve to the precomputed one
             response_curve_computed = response_curve
 
         # Save .npy file with unique filename
@@ -517,14 +549,20 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
     return processed_data
 
 def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoothing_lambda, 
-                        weighting_function, z_min, z_max, Zmax_precomputed, key = None):
+                        weighting_function, z_min, z_max, Zmax_precomputed, Zmin_precomputed, key = None):
     num_samples, num_images = intensity_samples.shape
     print(num_images, num_samples)
     
     # Use actual maximum from samples instead of Zmax_precomputed
+    print("zmin", z_min)
+    print("zmax",z_max)
+    
     actual_max = int(np.max(intensity_samples))
-    intensity_range = actual_max - z_min + 1
-    z_mid = int((z_min + actual_max) // 2)
+    actual_min = int(np.min(intensity_samples))
+    print("actual_min", actual_min)
+    print("actual_max", actual_max)
+    intensity_range = actual_max - actual_min + 1
+    z_mid = int((actual_min + actual_max) // 2)
 
     total_constraints = (num_samples * num_images + intensity_range - 2 + 
                         intensity_range - 1 + 1)
@@ -536,33 +574,34 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
     for i in range(num_samples):
         for j in range(num_images):
             current_zmax = np.median(Zmax_precomputed[j])
+            current_zmin = np.median(Zmin_precomputed[j])
             z_ij = intensity_samples[i, j]
-            w_ij = weighting_function(z_ij, current_zmax)
+            w_ij = weighting_function(z_ij, current_zmax, current_zmin)
             
             z_ij_scalar = int(z_ij)
             w_ij_scalar = np.mean(w_ij) if isinstance(w_ij, np.ndarray) else float(w_ij)
             
-            mat_A[k, z_ij_scalar - z_min] = w_ij_scalar
+            mat_A[k, z_ij_scalar - actual_min] = w_ij_scalar
             mat_b[k, 0] = w_ij_scalar * log_exposures[i, j]
             k += 1
 
     # Use actual_max instead of Zmax_precomputed for smoothness constraints
-    for z_k in range(z_min + 1, actual_max):
-        w_k = weighting_function(z_k, actual_max)
+    for z_k in range(actual_min + 1, actual_max):
+        w_k = weighting_function(z_k, actual_max, actual_min)
         w_k_scalar = np.mean(w_k) if isinstance(w_k, np.ndarray) else float(w_k)
-        mat_A[k, z_k - z_min - 1:z_k - z_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
+        mat_A[k, z_k - actual_min - 1:z_k - actual_min + 2] = w_k_scalar * smoothing_lambda * np.array([-1, 2, -1])
         k += 1
 
-    for z_k in range(z_min, actual_max - 1):
+    for z_k in range(actual_min, actual_max - 1):
         if k < total_constraints - 1:
-            mat_A[k, z_k - z_min] = -1
-            mat_A[k, z_k - z_min + 1] = 1
+            mat_A[k, z_k - actual_min] = -1
+            mat_A[k, z_k - actual_min + 1] = 1
             mat_b[k, 0] = 0.001
             k += 1
         else:
             break
 
-    mat_A[k, z_mid - z_min] = 1
+    mat_A[k, z_mid - actual_min] = 1
     mat_b[k, 0] = 0
 
     x = np.linalg.lstsq(mat_A, mat_b, rcond=None)[0]
@@ -580,28 +619,28 @@ def computeResponseCurve(intensity_samples, log_exposures, exposure_times, smoot
 
 
 
-def estimate_radiance(images, exposure_times, Zmax_precomputed, weighting_function=debevec_weight):
+def estimate_radiance(images, exposure_times, Zmax_precomputed, Zmin_precomputed, weighting_function=debevec_weight):
     num_images, height, width = images.shape
     radiance = np.zeros((height, width))
     weight_sum = np.zeros((height, width))
     
     for i in range(num_images):
-        weights = weighting_function(images[i], Zmax_precomputed[i])
+        weights = weighting_function(images[i], Zmax_precomputed[i], Zmin_precomputed[i])
         radiance += weights * images[i].astype(float) / exposure_times[i]
         weight_sum += weights
     
     return radiance / np.maximum(weight_sum, 1e-6)
 
-def sampleIntensities(images, exposure_times, Zmax_precomputed, weighting_function=debevec_weight):
+def sampleIntensities(images, exposure_times, Zmax_precomputed, Zmin_precomputed, weighting_function=debevec_weight):
     """Sample pixel intensities from the exposure stack, ensuring same pixels are sampled across all exposures."""
     num_images, height, width = images.shape
-    z_min = 0
-    z_max = np.max(Zmax_precomputed)
+    z_min = np.min(Zmin_precomputed, axis=0)
+    z_max = np.median(Zmax_precomputed, axis=0)
     logger.info(f"z_max: {z_max}; z_min: {z_min}")
 
     # Find reference image (first image that reaches 95% of Zmax)
     max_intensities = np.array([np.max(img) for img in images])
-    threshold = 0.95 * z_max
+    threshold = 0.95 * np.max(z_max)
     reference_indices = np.where(max_intensities >= threshold)[0]
     reference_idx = reference_indices[0] if len(reference_indices) > 0 else num_images // 2
     reference_image = images[reference_idx]
@@ -642,7 +681,7 @@ def sampleIntensities(images, exposure_times, Zmax_precomputed, weighting_functi
     sample_radiance = np.zeros((len(sampled_pixel_locations), num_images))
     
     # Calculate radiance
-    radiance = estimate_radiance(images, exposure_times, Zmax_precomputed, weighting_function)
+    radiance = estimate_radiance(images, exposure_times, Zmax_precomputed, Zmin_precomputed, weighting_function)
     
     # Fill arrays
     for i, (row, col) in enumerate(sampled_pixel_locations):
@@ -653,10 +692,12 @@ def sampleIntensities(images, exposure_times, Zmax_precomputed, weighting_functi
             # Store unadjusted values
             sample_radiance[i, j] = np.log(radiance[row, col] + 1e-10)
 
-    # Validate samples using Zmax_precomputed
+
+    # Validate samples using Zmax_precomputed, if data is clipped
     valid_samples = np.zeros(len(sampled_pixel_locations), dtype=bool)
+
     for i, (row, col) in enumerate(sampled_pixel_locations):
-        valid_exposures = (intensity_samples[i] > 0) & (intensity_samples[i] < Zmax_precomputed[:, row, col])
+        valid_exposures = (intensity_samples[i] > z_min) & (intensity_samples[i] < z_max)
         valid_samples[i] = np.sum(valid_exposures) >= num_images // 2
 
     # Filter out invalid samples
@@ -684,7 +725,7 @@ def plot_weighting_function(weighting_function, z_min, z_max, ax=None):
         ax = plt.gca()
     try:
         pixel_values = np.arange(z_min, z_max + 1)
-        weights = np.squeeze(weighting_function(pixel_values, z_max))
+        weights = np.squeeze(weighting_function(pixel_values, z_max, z_min))
         ax.plot(pixel_values, weights)
         ax.set_xlabel("Pixel Intensity")
         ax.set_ylabel("Weight")

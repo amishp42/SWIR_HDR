@@ -33,7 +33,7 @@ def load_parameters(param_directory):
     return params
 
 
-def process_and_save(directory, experiment_title, base_data_folder, operations=None, params=None):
+def process_and_save(directory, experiment_title, base_data_folder, operations=[], params=None):
     """
     Process image data with configurable operations.
     """
@@ -67,11 +67,9 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=N
                 )
             
             processed_data['image'] = images
-            if 'clip' or 'denoise' in operations:
-                op_names = '_'.join(operations)
-            else:
-                op_names = 'raw'
-            print(op_names)
+            if operations == []:
+                operations = ['raw']
+            op_names = '_'.join(operations)
             
             np.save(os.path.join(output_folder, f"{key}_{op_names}.npy"), processed_data)
     
@@ -106,7 +104,7 @@ def import_and_save_raw(directory, experiment_title, base_data_folder, date_cuto
     
     latest_emission_filters = {
         
-        '11': 'LP1250', '12': 'BP1150', '13': 'BP1200', '14': 'BP1300',
+        '10': 'NIRIILP', '11': 'LP1250', '12': 'BP1150', '13': 'BP1200', '14': 'BP1300',
         '15': 'BP1350', '16': 'BP1500', '17': 'BP1550'
     }
     
