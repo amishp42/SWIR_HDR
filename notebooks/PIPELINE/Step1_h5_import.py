@@ -53,7 +53,7 @@ def process_and_save(directory, experiment_title, base_data_folder, operations=[
             processed_data['exposure_time'] = data['exposure_time']
             images = data['image']
             
-            if 'clip' in operations:
+            if 'clip' or 'cliptop' in operations:
                 if 'Smax' not in params:
                     raise ValueError("Smax required for clipping")
                 images = np.minimum(images, params['Smax'])
