@@ -199,11 +199,10 @@ def square(z, Zmax, Zmin):
     Returns:
     numpy.ndarray: Weights calculated using the square function
     """
-    
-    if z > (Zmin+200) and z < (Zmax - 400):
-         x = 1
-    else:
-         x = 0
+    x = np.zeros_like(z)
+    x[z>(Zmin+200)] = 1
+    x[z>(Zmax-500)] = 0
+
     return x
 
 def load_data(directory, base_data_folder):
@@ -467,10 +466,11 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
             response_curve_computed = response_curve
 
         # Save .npy file with unique filename
+
         radiance_map_filename = f"{key}_radmap_{data_type}_{weighting_function.__name__}.npy"
         radiance_map_path = os.path.join(final_data_folder, radiance_map_filename)
         unique_npy_path = get_unique_filename(radiance_map_path)
-        np.save(unique_npy_path, radiance_map)
+        np.save(unique_npy_path, np.exp(radiance_map))
         
         # Save TIFF files in both linear and log scale
         tiff_base = os.path.splitext(radiance_map_filename)[0]
