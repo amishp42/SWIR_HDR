@@ -303,7 +303,7 @@ def load_data(directory, base_data_folder):
 
 
 def computeRadianceMap(images, exposure_times, Zmax_precomputed, Zmin_precomputed, smoothing_lambda=1000, 
-                      return_all=False, crf="default", weighting_function=debevec, key=None, repo=None):
+                      return_all=False, crf="default", weighting_function=debevec, key=None, repo=None, method = "default"):
     """
     Compute the radiance map from multiple exposures.
     
@@ -344,20 +344,115 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, Zmin_precompute
     num_images, height, width = images.shape
     radiance_map = np.zeros((height, width), dtype=np.float32)
     sum_weights = np.zeros((height, width), dtype=np.float32)
+    
+    if method == "default":
+        for i in range(num_images):
+            w = weighting_function(images[i], Zmax_precomputed[i], Zmin_precomputed[i])
+            #clip pixels below z_min
+            indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
+            radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
+            sum_weights += w
+        radiance_map /= sum_weights
+    elif method == "adaptive":
+        saturation_percentage = 0.95
+        noise_percentage = 0.015
+        num_images, height, width = images.shape
+        noise_thresholds = np.zeros((num_images, height, width), dtype=np.float32)
+        saturation_thresholds = np.zeros((num_images, height, width), dtype=np.float32)
+        for i, exp_time in enumerate(exposure_times):
+            # Compute thresholds on RAW datA
+            noise_floor = Zmin_precomputed[i]
+            noise_thresholds[i] = noise_floor + (Zmax_precomputed[i] - noise_floor) * noise_percentage
+            saturation_thresholds[i] = Zmax_precomputed[i] * saturation_percentage
+        
+        # Per-pixel exposure selection with fallback
+        exposure_masks = np.zeros((num_images, height, width), dtype=bool)
+        fallback_pixels = 0
+        
+        #Logging of exposures usage per pixel
+        exposure_count = np.zeros((height, width), dtype=int)
+        min_exp = np.zeros((height, width), dtype=float)
+        max_exp = np.zeros((height, width), dtype=float)
+        for y in range(height):
+            for x in range(width):
+                pixel_values = images[:, y, x]
+                
+                above_noise = pixel_values > noise_thresholds[:, y, x]
+                below_saturation = pixel_values < saturation_thresholds[:, y, x]
+                valid_exposures = above_noise & below_saturation
+                
+                if np.any(valid_exposures):
+                    # Normal case: some exposures pass both tests
+                    valid_indices = np.where(valid_exposures)[0]
+                    first_valid = valid_indices[0]
+                    last_valid = valid_indices[-1]
+                    
+                    selected_indices = list(valid_indices)
+                    
+                    # Add limited undersaturated
+                    undersaturated = np.where(~above_noise)[0]
+                    undersaturated = undersaturated[undersaturated < first_valid]
+                    if len(undersaturated) > 0:
+                        num_to_include = min(1, len(undersaturated))
+                        selected_indices.extend(undersaturated[-num_to_include:])
+                    
+                    # Add limited oversaturated
+                    oversaturated = np.where(~below_saturation)[0]
+                    oversaturated = oversaturated[oversaturated > last_valid]
+                    if len(oversaturated) > 0:
+                        num_to_include = min(1, len(oversaturated))
+                        selected_indices.extend(oversaturated[:num_to_include])
+                    
+                    exposure_masks[selected_indices, y, x] = True
+                    exposure_count(y, x) = len(selected_indices)
+                    min_exp[y, x] = selected_indices[0]
+                    max_exp[y, x] = selected_indices[-1]
+                else:
+                    # FALLBACK: No exposures pass both tests - ensure at least one exposure is selected
+                    fallback_pixels += 1
+                    
+                    if np.all(pixel_values >= saturation_thresholds[:, y, x]):
+                        # All saturated: use shortest exposure (best estimate of true signal)
+                        best_exposure = np.argmin(exposure_times)
+                    else:
+                        # All too dark: use longest exposure (highest SNR)
+                        best_exposure = np.argmax(exposure_times)
+                    
+                    exposure_masks[best_exposure, y, x] = True
+                    exposure_count(y, x) = 1
+                    min_exp[y, x] = best_exposure
+                    max_exp[y, x] = best_exposure
 
-    for i in range(num_images):
-        w = weighting_function(images[i], Zmax_precomputed[i], Zmin_precomputed[i])
-        #clip pixels below z_min
-        indices = np.clip(np.round(images[i] - z_min).astype(int), 0, len(response_curve) - 1)
-        radiance_map += w * (response_curve[indices] - np.log(exposure_times[i]))
-        sum_weights += w
 
-    sum_weights[sum_weights == 0] = 1e-6
-    radiance_map /= sum_weights
+        weighted_sum = np.zeros((height, width), dtype=np.float32)
+        weight_sum = np.zeros((height, width), dtype=np.float32)
+        mid_val = Zmax_precomputed.mean() / 2
+        
+        for i, exp_time in enumerate(exposure_times):
+            pixel_mask = exposure_masks[i]
+            
+            if np.any(pixel_mask):
+                weight = np.where(
+                    images[i] <= mid_val,
+                    images[i] / mid_val,
+                    (Zmax_precomputed[i] - images[i]) / mid_val
+                )
+                weight = np.maximum(weight, 0) * pixel_mask.astype(np.float32)
+                
+                radiance_estimate = images[i] / exp_time
+                weighted_sum += weight * radiance_estimate
+                weight_sum += weight
+
+        radiance_map = weighted_sum / weight_sum
+    
+        # Report fallback statistics
+        total_pixels = height * width
+        if fallback_pixels > 0:
+            print(f"      📊 Fallback pixels: {fallback_pixels:,} ({100*fallback_pixels/total_pixels:.1f}%)")
 
     if return_all:
         return radiance_map, response_curve, z_min, z_max, intensity_samples, log_exposures, sample_radiance
-    return radiance_map
+    return radiance_map, exposure_count, min_exp, max_exp
 
 
 def get_unique_filename(filepath):
@@ -408,7 +503,7 @@ def save_as_tiff(radiance_map, filepath, log_scale=False):
     tifffile.imwrite(unique_filepath, data.astype(np.float32))
 
 def process_hdr_images(directory, experiment_title, base_data_folder, coefficients_dict, response_curve="default",
-                      smoothing_lambda=1000, weighting_function=debevec, num_sets=None):
+                      smoothing_lambda=1000, weighting_function=debevec, num_sets=None, method = "default"):
     """
     Process HDR images from the given directory and experiment title.
     
@@ -456,11 +551,11 @@ def process_hdr_images(directory, experiment_title, base_data_folder, coefficien
 
         Zmax_precomputed, Zmin_precomputed = precompute_zmax(images, Smax, Sd, bias, exposure_times, data_type = data_type)
 
-        
+
         radiance_map, response_curve_computed, z_min, z_max, intensity_samples, log_exposures, sample_radiance = computeRadianceMap(
             images, exposure_times, Zmax_precomputed, Zmin_precomputed, smoothing_lambda=smoothing_lambda, 
             crf=response_curve, return_all=True, weighting_function=weighting_function, 
-            key=key, repo=repodirectory
+            key=key, repo=repodirectory, method = method
         )
         if response_curve_computed is None: #if no response curve is computed, set response curve to the precomputed one
             response_curve_computed = response_curve
