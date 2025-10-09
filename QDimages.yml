@@ -1,4 +1,4 @@
-name: QDimages
+name: QDimages_240604
 channels:
   - conda-forge
   - spectrocat
@@ -7,8 +7,14 @@ dependencies:
   - ipykernel
   - matplotlib
   - notebook
-  - python=3.10.12
+  - python=3.12.3
   - scikit-learn
+  - scikit-image
   - pandas
   - numpy
-  - spectrochempy=0.6.7=stable
+  - pathlib
+  - h5py
+  - tiffile
+  - pickle
+  - os
+  - spectrochempy=0.6.8=stable
