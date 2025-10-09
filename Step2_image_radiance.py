@@ -18,7 +18,6 @@ and saving the linear radiance map as a npy array. 8-bit HDR image generation
 and presentation is handled in a separate code module.
 """
 
-
 def precompute_zmax(images, Smax, Sd, bias, exposure_times, data_type = "clipdenoise"):
     """
     Precompute Zmax for all pixels and exposure times.
@@ -388,7 +387,7 @@ def computeRadianceMap(images, exposure_times, Zmax_precomputed, Zmin_precompute
                         selected_indices.extend(oversaturated[:num_to_include])
                     
                     exposure_masks[selected_indices, y, x] = True
-                    exposure_count(y, x) = len(selected_indices)
+                    exposure_count[y, x] = len(selected_indices)
                     min_exp[y, x] = selected_indices[0]
                     max_exp[y, x] = selected_indices[-1]
                 else:
