@@ -1,0 +1,13 @@
+Version: 0.1.2-e2f2b25
+Date: 2025-02-14 14:31:40
+Data Directory: C:\Users\apate\OneDrive - Northeastern University\Dennis Lab site\AP\Imaging\HDRpaper\PC_Female_5_2_63min
+Experiment Title: PC_Female_5_2_63min
+Number of Sets: None
+Exposure Times: [0.02 0.04 0.08 0.16 0.32 0.64]
+Smoothing Lambda: 1000
+Weighting Function: debevec_weight
+Camera Response Function: default
+Output Files:
+  - NPY: PC_Female_5_2_63min_808_BP1350_radiance_map_clip_denoise_debevec_weight.npy
+  - TIFF (Linear): PC_Female_5_2_63min_808_BP1350_radiance_map_clip_denoise_debevec_weight_linear.tif
+  - TIFF (Log): PC_Female_5_2_63min_808_BP1350_radiance_map_clip_denoise_debevec_weight_log.tif

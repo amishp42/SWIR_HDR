@@ -8,5 +8,4 @@ Next, in a terminal or using VS Code, do:
 ```conda env create -f QDimages.yml```
 ```conda activate QDimages```
 
-Then, open a Jupyter notebook in the notebooks folder. Make sure you choose the
-QDimages kernel at the top right.
+Then, open a Jupyter notebook in the notebooks folder. Make sure you choose the QDimages kernel.
